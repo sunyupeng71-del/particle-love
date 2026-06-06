@@ -1,0 +1,62 @@
+/* 重置页面默认边距和滚动条 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden; /* 去掉滚动条 */
+}
+
+body {
+  /* 深蓝到深紫的背景渐变 */
+  background: linear-gradient(135deg, #0a0a2e 0%, #1a0a3e 40%, #2d0a5e 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Canvas 铺满全屏，绝对定位在最底层 */
+#canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* 呼吸灯文字：叠加在 Canvas 上方，居中显示 */
+#love-text {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  /* top 值由 JS 动态设置，跟随爱心底部 */
+  top: 60%;
+
+  font-family: "Georgia", "STSong", serif;
+  font-size: clamp(18px, 3vw, 32px); /* 响应式字号 */
+  color: #f9b8d0;
+  letter-spacing: 0.2em;
+  white-space: nowrap;
+  pointer-events: none; /* 不阻断鼠标事件穿透到 Canvas */
+  user-select: none;
+
+  /* 呼吸灯动画：柔和明暗渐变，周期 3 秒 */
+  animation: breathe 3s ease-in-out infinite;
+
+  /* 文字发光效果 */
+  text-shadow:
+    0 0 8px rgba(249, 184, 208, 0.8),
+    0 0 20px rgba(249, 184, 208, 0.4),
+    0 0 40px rgba(200, 100, 180, 0.3);
+}
+
+@keyframes breathe {
+  0%   { opacity: 0.4; text-shadow: 0 0 6px rgba(249,184,208,0.4), 0 0 14px rgba(249,184,208,0.2); }
+  50%  { opacity: 1.0; text-shadow: 0 0 12px rgba(249,184,208,1.0), 0 0 28px rgba(249,184,208,0.6), 0 0 50px rgba(200,100,180,0.5); }
+  100% { opacity: 0.4; text-shadow: 0 0 6px rgba(249,184,208,0.4), 0 0 14px rgba(249,184,208,0.2); }
+}
