@@ -16,6 +16,18 @@ const fireworkNameEl = document.getElementById('firework-name');
 const musicBtn       = document.getElementById('music-btn');
 const musicTip       = document.getElementById('music-tip');
 const subTextEl      = document.getElementById('sub-text');
+const bgMusicEl      = document.getElementById('bgMusic');
+
+// ---- 音频状态 -----------------------------------------------
+let audioCtx         = null;   // Web Audio Context（懒初始化）
+let soundEnabled     = false;  // 全局声音开关
+let musicToggleCount = 0;      // 按钮点击次数（奇=开，偶=关）
+let ambLowGain       = null;   // 氛围低频增益节点
+let ambHighGain      = null;   // 氛围高频增益节点
+let ambInited        = false;  // 氛围音是否已初始化
+let mouseSoundAccum  = 0;      // 鼠标移动距离累计
+let mouseSoundLastX  = -1, mouseSoundLastY = -1;
+let lastParticleSndT = 0;      // 粒子音效节流时间戳
 
 // ---- 数量常量 -----------------------------------------------
 const TOTAL      = 180;
@@ -281,6 +293,7 @@ class Particle {
         const a = Math.atan2(-mdy, -mdx) + this.jitter;
         this.vx += Math.cos(a) * f;
         this.vy += Math.sin(a) * f;
+        maybePlayParticlePush();  // 风铃推开音（节流+5%概率）
       }
 
       // 鼠标静止 2s 后极缓慢靠近光标
@@ -496,8 +509,8 @@ function init() {
 // ============================================================
 function startIntro() {
   // 0-2s: 星空背景出现（canvas 自然渲染）
-  // 2s: 第一行文字淡入
-  setTimeout(()=>{ introLine1.style.opacity='1'; }, 2000);
+  // 2s: 第一行文字淡入；同时静默预热氛围音节点（AudioContext 已就绪）
+  setTimeout(()=>{ introLine1.style.opacity='1'; initAmbientSound(); }, 2000);
   // 3.5s: 第一行淡出
   setTimeout(()=>{ introLine1.style.opacity='0'; }, 3500);
   // 4s: 第二行淡入
@@ -580,6 +593,7 @@ function recordClick() {
 }
 function triggerEgg1() {
   egg1On=true;
+  playMagicSound();  // C5→E5→G5 魔法音
   particles.forEach(p=>{ p.savedColor={...p.color}; p.color={r:255,g:(188+Math.random()*38)|0,b:(48+Math.random()*32)|0}; });
   egg1Msg.style.opacity='1';
   clearTimeout(egg1Timer);
@@ -643,6 +657,7 @@ function explode(cx, cy) {
         setTimeout(()=>{ if(p.savedColor) p.color=p.savedColor; },1800+Math.random()*1000);
       }
     });
+    playExplosionSound();  // 烟花爆炸音
     addShockwaves(cx,cy);
     showFireworkName(cx,cy);
     clearTimeout(explodeTimer);
@@ -820,6 +835,7 @@ function animate() {
 // ============================================================
 window.addEventListener('mousemove', e=>{
   mouse.x=e.clientX; mouse.y=e.clientY; lastMouseMoveTime=performance.now();
+  onMouseMoved(e.clientX, e.clientY);  // 鼠标移动叮声
 });
 window.addEventListener('mouseleave',()=>{ mouse.x=-9999; mouse.y=-9999; });
 
@@ -852,16 +868,192 @@ window.addEventListener('touchend', e=>{
   if(e.touches.length===0){mouse.x=-9999;mouse.y=-9999;}
 },{passive:true});
 
-// 音乐按钮（自动 3s 消失）
-let tipTimer=null;
+// 音乐按钮：完整切换逻辑（开/关循环）
+let tipTimer = null;
 musicBtn.addEventListener('click', e=>{
   e.stopPropagation();
-  musicTip.style.opacity='1';
-  clearTimeout(tipTimer);
-  tipTimer=setTimeout(()=>{ musicTip.style.opacity='0'; },3000);
+  toggleMusic();
 });
 
 window.addEventListener('resize',()=>{ startTime=performance.now(); init(); });
+
+// ============================================================
+// 音频系统（Web Audio API，无外部文件）
+// ============================================================
+
+function getAC() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+// 通用：播放单个衰减音（正弦/三角）
+function playTone(freq, vol, dur, type = 'sine') {
+  if (!soundEnabled) return;
+  const ac = getAC();
+  const osc = ac.createOscillator();
+  const gain = ac.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, ac.currentTime);
+  gain.gain.setValueAtTime(vol, ac.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + dur);
+  osc.connect(gain); gain.connect(ac.destination);
+  osc.start(ac.currentTime); osc.stop(ac.currentTime + dur + 0.02);
+}
+
+// 1. 鼠标移动叮声：每累计 30px 播放一次
+function onMouseMoved(x, y) {
+  if (mouseSoundLastX < 0) { mouseSoundLastX = x; mouseSoundLastY = y; return; }
+  const dx = x - mouseSoundLastX, dy = y - mouseSoundLastY;
+  mouseSoundAccum += Math.sqrt(dx*dx + dy*dy);
+  mouseSoundLastX = x; mouseSoundLastY = y;
+  if (!soundEnabled) return;
+  if (mouseSoundAccum >= 30) {
+    mouseSoundAccum = 0;
+    playTone(800 + Math.random()*400, 0.03 + Math.random()*0.02, 0.10);
+  }
+}
+
+// 2. 粒子推开音效：节流（每 120ms 最多一次）+ 5% 概率
+function maybePlayParticlePush() {
+  if (!soundEnabled) return;
+  const now = performance.now();
+  if (now - lastParticleSndT < 120) return;
+  if (Math.random() > 0.05) return;
+  lastParticleSndT = now;
+  playTone(600 + Math.random()*400, 0.04, 0.08);
+}
+
+// 3. 烟花爆炸音：低频振荡 + 白噪声
+function playExplosionSound() {
+  if (!soundEnabled) return;
+  const ac  = getAC();
+  const now = ac.currentTime;
+
+  // 低频体（80→40Hz，温暖衰减）
+  const osc = ac.createOscillator();
+  const og  = ac.createGain();
+  osc.type  = 'sine';
+  osc.frequency.setValueAtTime(80, now);
+  osc.frequency.exponentialRampToValueAtTime(40, now + 0.6);
+  og.gain.setValueAtTime(0.15, now);
+  og.gain.exponentialRampToValueAtTime(0.0001, now + 0.6);
+  osc.connect(og); og.connect(ac.destination);
+  osc.start(now); osc.stop(now + 0.62);
+
+  // 白噪声（短促，增加质感）
+  const bufLen = ac.sampleRate * 0.6 | 0;
+  const buf    = ac.createBuffer(1, bufLen, ac.sampleRate);
+  const data   = buf.getChannelData(0);
+  for (let i = 0; i < bufLen; i++) data[i] = Math.random()*2 - 1;
+  const noise  = ac.createBufferSource();
+  noise.buffer = buf;
+  const ng     = ac.createGain();
+  ng.gain.setValueAtTime(0.07, now);
+  ng.gain.exponentialRampToValueAtTime(0.0001, now + 0.6);
+  noise.connect(ng); ng.connect(ac.destination);
+  noise.start(now); noise.stop(now + 0.62);
+}
+
+// 4. 彩蛋魔法音：C5 → E5 → G5 依次上升
+function playMagicSound() {
+  if (!soundEnabled) return;
+  [523, 659, 784].forEach((freq, i) => {
+    setTimeout(() => playTone(freq, 0.12, 0.15), i * 200);
+  });
+}
+
+// 5a. 氛围音初始化（振荡器始终运行，增益控制音量）
+function initAmbientSound() {
+  if (ambInited) return;
+  ambInited = true;
+  const ac  = getAC();
+  const now = ac.currentTime;
+
+  // 低频主体：55Hz 正弦 + LFO 颤音（±2Hz，8s 周期）
+  const lowOsc  = ac.createOscillator();
+  ambLowGain    = ac.createGain();
+  lowOsc.type   = 'sine';
+  lowOsc.frequency.value = 55;
+  ambLowGain.gain.setValueAtTime(0, now);
+  lowOsc.connect(ambLowGain); ambLowGain.connect(ac.destination);
+
+  const lfo     = ac.createOscillator();
+  const lfoGain = ac.createGain();
+  lfo.type      = 'sine';
+  lfo.frequency.value  = 1 / 8;  // 8s 一周期
+  lfoGain.gain.value   = 2;       // ±2Hz 偏移
+  lfo.connect(lfoGain); lfoGain.connect(lowOsc.frequency);
+  lfo.start(); lowOsc.start();
+
+  // 高频微光：1600Hz，随机闪烁
+  const hiOsc   = ac.createOscillator();
+  ambHighGain   = ac.createGain();
+  hiOsc.type    = 'sine';
+  hiOsc.frequency.value = 1600;
+  ambHighGain.gain.setValueAtTime(0, now);
+  hiOsc.connect(ambHighGain); ambHighGain.connect(ac.destination);
+  hiOsc.start();
+
+  // 高频闪烁调度（每 2-5 秒随机触发）
+  function twinkle() {
+    const t = getAC().currentTime;
+    ambHighGain.gain.cancelScheduledValues(t);
+    ambHighGain.gain.setValueAtTime(ambHighGain.gain.value, t);
+    ambHighGain.gain.linearRampToValueAtTime(0.020, t + 0.10);
+    ambHighGain.gain.exponentialRampToValueAtTime(0.005, t + 0.45);
+    setTimeout(twinkle, 2000 + Math.random()*3000);
+  }
+  setTimeout(twinkle, 3000);
+}
+
+// 5b. 氛围音淡入
+function fadeInAmbient() {
+  initAmbientSound();
+  const ac = getAC();
+  const t  = ac.currentTime;
+  ambLowGain.gain.cancelScheduledValues(t);
+  ambLowGain.gain.setValueAtTime(ambLowGain.gain.value, t);
+  ambLowGain.gain.linearRampToValueAtTime(0.020, t + 2.5);
+  ambHighGain.gain.cancelScheduledValues(t);
+  ambHighGain.gain.setValueAtTime(ambHighGain.gain.value, t);
+  ambHighGain.gain.linearRampToValueAtTime(0.005, t + 2.5);
+}
+
+// 5c. 氛围音淡出
+function fadeOutAmbient() {
+  if (!ambLowGain) return;
+  const ac = getAC();
+  const t  = ac.currentTime;
+  ambLowGain.gain.cancelScheduledValues(t);
+  ambLowGain.gain.setValueAtTime(ambLowGain.gain.value, t);
+  ambLowGain.gain.linearRampToValueAtTime(0, t + 1.2);
+  ambHighGain.gain.cancelScheduledValues(t);
+  ambHighGain.gain.setValueAtTime(ambHighGain.gain.value, t);
+  ambHighGain.gain.linearRampToValueAtTime(0, t + 1.2);
+}
+
+// 6. 音符按钮切换（奇数次=开，偶数次=关，循环）
+function toggleMusic() {
+  musicToggleCount++;
+  soundEnabled = musicToggleCount % 2 === 1;
+
+  if (soundEnabled) {
+    // iOS 需要在用户手势后 resume AudioContext
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    fadeInAmbient();
+    if (bgMusicEl) bgMusicEl.play().catch(() => {});
+    musicBtn.style.color       = 'rgba(255,154,178,0.88)';
+    musicBtn.style.borderColor = 'rgba(255,154,178,0.45)';
+    musicTip.style.opacity     = '1';
+    clearTimeout(tipTimer);
+    tipTimer = setTimeout(() => { musicTip.style.opacity = '0'; }, 3000);
+  } else {
+    fadeOutAmbient();
+    if (bgMusicEl) bgMusicEl.pause();
+    musicBtn.style.color       = '';
+    musicBtn.style.borderColor = '';
+  }
+}
 
 // ============================================================
 // 二十九、启动
