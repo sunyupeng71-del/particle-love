@@ -27,7 +27,7 @@ let lastParticleSndT = 0;      // 粒子音效节流时间戳
 let lastChimeMoveT   = 0;      // 鼠标移动风铃节流时间戳
 
 // 烟花文件跳过前置静音的秒数（根据实际文件调整）
-const FIREWORK_SKIP  = 0.35;
+const FIREWORK_SKIP  = 1.19;
 
 // 预加载本地音频对象（文件位于 音乐/ 子目录）
 // 风铃拆成两个独立对象：各自 reset 复用，彻底避免 clone 叠加爆音
@@ -907,17 +907,16 @@ function playSoundForce(snd, vol) {
 }
 
 // ---- 一、鼠标移动风铃音 -------------------------------------
-// 修复：不用 clone，直接 reset 同一对象，彻底杜绝叠加爆音
-// 距离阈值提高到 80px，时间节流 220ms，限制最大播放频率
+// 距离阈值 50px，时间节流 200ms；直接 reset 同一对象无叠加
 function onMouseMoved(x, y) {
   if (mouseSoundLastX < 0) { mouseSoundLastX = x; mouseSoundLastY = y; return; }
   const dx = x - mouseSoundLastX, dy = y - mouseSoundLastY;
   mouseSoundAccum += Math.sqrt(dx*dx + dy*dy);
   mouseSoundLastX = x; mouseSoundLastY = y;
-  if (!soundEnabled || mouseSoundAccum < 80) return;
+  if (!soundEnabled || mouseSoundAccum < 50) return;
   mouseSoundAccum = 0;
   const now = performance.now();
-  if (now - lastChimeMoveT < 220) return;   // 时间节流，避免快速移动时叠加
+  if (now - lastChimeMoveT < 200) return;
   lastChimeMoveT = now;
   sndChimeMove.currentTime = 0;
   sndChimeMove.volume = 0.15;
@@ -925,12 +924,13 @@ function onMouseMoved(x, y) {
 }
 
 // ---- 二、粒子推开音 -----------------------------------------
-// 修复：同上，reset 同一对象；节流从 150ms 提高到 400ms
-// 鼠标必须在 300ms 内有移动才允许触发，静止时彻底无声
+// 关键修复：窗口从 300ms 缩短到 80ms
+// 鼠标必须在 80ms 内有过移动才触发，一停下立即静音
+// 避免"刚停住时粒子仍振动导致漏音"的感知问题
 function maybePlayStarGlint() {
   if (!soundEnabled) return;
   const now = performance.now();
-  if (now - lastMouseMoveTime > 300) return;  // 鼠标静止则跳过
+  if (now - lastMouseMoveTime > 80) return;   // 80ms 内无移动则跳过
   if (now - lastParticleSndT < 400) return;   // 节流 400ms
   if (Math.random() > 0.03) return;           // 3% 概率
   lastParticleSndT = now;
