@@ -4,14 +4,30 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>粒子情书</title>
+
+  <!-- Google Fonts：衬线优雅体 + 手写亲切体 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400&family=Dancing+Script:wght@600&display=swap" rel="stylesheet" />
+
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- 全屏 Canvas，所有粒子效果在此绘制 -->
+
+  <!-- 全屏 Canvas：背景氛围 + 粒子系统全在此渲染 -->
   <canvas id="canvas"></canvas>
 
-  <!-- 呼吸灯文字，叠加在 Canvas 正下方爱心位置 -->
-  <div id="love-text">For 范晓语</div>
+  <!-- 文字组：叠在 Canvas 上方，由 JS 动态定位 -->
+  <div id="text-group">
+    <!-- 手写名字 -->
+    <div id="name-text">Yueyue</div>
+    <!-- 装饰线上 -->
+    <div class="deco-line"></div>
+    <!-- 副标题 -->
+    <div id="sub-text">YOU LIGHT UP MY WORLD</div>
+    <!-- 装饰线下 -->
+    <div class="deco-line"></div>
+  </div>
 
   <script src="script.js"></script>
 </body>

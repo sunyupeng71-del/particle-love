@@ -1,5 +1,9 @@
-/* 重置页面默认边距和滚动条 */
-* {
+/* ============================================================
+   粒子情书 — style.css（升级版）
+   ============================================================ */
+
+/* 重置 */
+*, *::before, *::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
@@ -8,55 +12,88 @@
 html, body {
   width: 100%;
   height: 100%;
-  overflow: hidden; /* 去掉滚动条 */
+  overflow: hidden;
+  background: #0a0a1a; /* 深空底色，与 Canvas 渐变衔接 */
 }
 
-body {
-  /* 深蓝到深紫的背景渐变 */
-  background: linear-gradient(135deg, #0a0a2e 0%, #1a0a3e 40%, #2d0a5e 100%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* Canvas 铺满全屏，绝对定位在最底层 */
+/* ---- Canvas：铺满全屏，在最底层 ---- */
 #canvas {
   position: fixed;
   top: 0;
   left: 0;
+  /* CSS 尺寸保持 100vw×100vh，实际像素由 JS 乘以 dpr */
   width: 100%;
   height: 100%;
   display: block;
 }
 
-/* 呼吸灯文字：叠加在 Canvas 上方，居中显示 */
-#love-text {
+/* ---- 文字组：绝对居中，叠在 Canvas 上方 ---- */
+#text-group {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
-  /* top 值由 JS 动态设置，跟随爱心底部 */
-  top: 60%;
-
-  font-family: "Georgia", "STSong", serif;
-  font-size: clamp(18px, 3vw, 32px); /* 响应式字号 */
-  color: #f9b8d0;
-  letter-spacing: 0.2em;
-  white-space: nowrap;
-  pointer-events: none; /* 不阻断鼠标事件穿透到 Canvas */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
   user-select: none;
+  /* top 由 JS 根据爱心底部位置动态设置 */
+  top: 62%;
 
-  /* 呼吸灯动画：柔和明暗渐变，周期 3 秒 */
+  /* 整体呼吸灯动画：透明度 + 发光同步脉动，周期 3s */
   animation: breathe 3s ease-in-out infinite;
-
-  /* 文字发光效果 */
-  text-shadow:
-    0 0 8px rgba(249, 184, 208, 0.8),
-    0 0 20px rgba(249, 184, 208, 0.4),
-    0 0 40px rgba(200, 100, 180, 0.3);
 }
 
+/* 手写名字 */
+#name-text {
+  font-family: 'Dancing Script', cursive;
+  font-size: clamp(36px, 5vw, 56px);
+  font-weight: 600;
+  color: #fff5f8;
+  letter-spacing: 0.05em;
+  line-height: 1;
+
+  /* 双层发光：内层白色 + 外层粉色扩散 */
+  text-shadow:
+    0 0  8px rgba(255, 255, 255, 0.95),
+    0 0 25px rgba(255, 107, 157, 0.85),
+    0 0 50px rgba(255, 107, 157, 0.40);
+}
+
+/* 副标题 */
+#sub-text {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: clamp(11px, 1.5vw, 17px);
+  font-weight: 300;
+  color: rgba(255, 220, 235, 0.85);
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  line-height: 1;
+
+  text-shadow:
+    0 0  6px rgba(255, 255, 255, 0.70),
+    0 0 18px rgba(255, 107, 157, 0.55);
+}
+
+/* 装饰线 */
+.deco-line {
+  width: 100px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 154, 178, 0.70) 30%,
+    rgba(255, 107, 157, 0.90) 50%,
+    rgba(255, 154, 178, 0.70) 70%,
+    transparent 100%
+  );
+  /* 同样参与呼吸灯（继承父级 animation 的 opacity 变化） */
+}
+
+/* 呼吸灯关键帧 */
 @keyframes breathe {
-  0%   { opacity: 0.4; text-shadow: 0 0 6px rgba(249,184,208,0.4), 0 0 14px rgba(249,184,208,0.2); }
-  50%  { opacity: 1.0; text-shadow: 0 0 12px rgba(249,184,208,1.0), 0 0 28px rgba(249,184,208,0.6), 0 0 50px rgba(200,100,180,0.5); }
-  100% { opacity: 0.4; text-shadow: 0 0 6px rgba(249,184,208,0.4), 0 0 14px rgba(249,184,208,0.2); }
+  0%   { opacity: 0.45; }
+  50%  { opacity: 1.00; }
+  100% { opacity: 0.45; }
 }
