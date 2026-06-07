@@ -2,32 +2,48 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>粒子情书</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>给范晓语</title>
 
-  <!-- Google Fonts：衬线优雅体 + 手写亲切体 -->
+  <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400&family=Dancing+Script:wght@600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400&family=Dancing+Script:wght@500;600&family=Noto+Serif+SC:wght@300;400&display=swap" rel="stylesheet" />
 
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-  <!-- 全屏 Canvas：背景氛围 + 粒子系统全在此渲染 -->
+  <!-- 全屏 Canvas：粒子系统、背景、萤火虫全在此渲染 -->
   <canvas id="canvas"></canvas>
 
-  <!-- 文字组：叠在 Canvas 上方，由 JS 动态定位 -->
+  <!-- 入场欢迎语：页面打开时最先出现 -->
+  <div id="intro-screen">
+    <div id="intro-text">Hi，范晓语</div>
+  </div>
+
+  <!-- 主文字组：爱心聚合完成后逐字淡入 -->
   <div id="text-group">
-    <!-- 手写名字 -->
-    <div id="name-text">Yueyue</div>
-    <!-- 装饰线上 -->
+    <div id="name-text">范晓语</div>
     <div class="deco-line"></div>
-    <!-- 副标题 -->
-    <div id="sub-text">YOU LIGHT UP MY WORLD</div>
-    <!-- 装饰线下 -->
+    <div id="sub-text">能够遇见你，是我最大的幸福</div>
     <div class="deco-line"></div>
   </div>
+
+  <!-- 彩蛋秘密消息：三连击触发 -->
+  <div id="secret-msg">爱是醒来发现这不是梦</div>
+
+  <!-- 烟花名字浮现层：点击爆炸时短暂显示 -->
+  <div id="firework-name">范晓语</div>
+
+  <!-- 音乐按钮（右下角极简符号） -->
+  <button id="music-btn" aria-label="音乐">♫</button>
+
+  <!-- 音乐提示气泡 -->
+  <div id="music-tip">这是范晓语的专属页面，音乐需要你亲自打开哦～</div>
+
+  <!-- 页脚彩蛋 -->
+  <footer id="page-footer">// Built with love, for 范晓语. 2026</footer>
 
   <script src="script.js"></script>
 </body>
