@@ -19,19 +19,24 @@ const subTextEl      = document.getElementById('sub-text');
 const bgMusicEl      = document.getElementById('bgMusic');
 
 // ---- 音频状态（HTML5 Audio 本地文件版）-----------------------
-let soundEnabled     = false;  // 全局声音开关（♫ 按钮控制）
-let musicToggleCount = 0;      // 按钮点击计数（奇=开，偶=关）
-let mouseSoundAccum  = 0;      // 鼠标移动距离累计（50px 触发一次）
+let soundEnabled     = false;
+let musicToggleCount = 0;
+let mouseSoundAccum  = 0;      // 鼠标移动距离累计
 let mouseSoundLastX  = -1, mouseSoundLastY = -1;
 let lastParticleSndT = 0;      // 粒子音效节流时间戳
+let lastChimeMoveT   = 0;      // 鼠标移动风铃节流时间戳
+
+// 烟花文件跳过前置静音的秒数（根据实际文件调整）
+const FIREWORK_SKIP  = 0.35;
 
 // 预加载本地音频对象（文件位于 音乐/ 子目录）
-const sndChime     = new Audio('音乐/chime.mp3');
+// 风铃拆成两个独立对象：各自 reset 复用，彻底避免 clone 叠加爆音
+const sndChimeMove = new Audio('音乐/chime.mp3'); // 鼠标移动
+const sndChimePush = new Audio('音乐/chime.mp3'); // 粒子推开
 const sndFirework  = new Audio('音乐/firework.wav');
 const sndMagic     = new Audio('音乐/magic.wav');
 const sndSwitchOn  = new Audio('音乐/switch-on.mp3');
 const sndSwitchOff = new Audio('音乐/switch-off.mp3');
-// bgMusicEl 继续使用 DOM 中已有的 <audio id="bgMusic">
 if (bgMusicEl) { bgMusicEl.loop = true; bgMusicEl.volume = 0.2; }
 
 // ---- 数量常量 -----------------------------------------------
@@ -886,7 +891,7 @@ window.addEventListener('resize',()=>{ startTime=performance.now(); init(); });
 // 音频系统 v3（HTML5 Audio · 本地文件 · 零依赖）
 // ============================================================
 
-// 通用播放：clone 节点避免重叠冲突（短音效高频触发安全）
+// 通用播放（低频一次性音效用：clone 保证不打断）
 function playSound(snd, vol) {
   if (!soundEnabled) return;
   const clip = snd.cloneNode();
@@ -894,43 +899,56 @@ function playSound(snd, vol) {
   clip.play().catch(() => {});
 }
 
-// 无视 soundEnabled 直接播放（仅用于关闭确认音）
+// 强制播放（不受 soundEnabled 限制，用于关闭确认音）
 function playSoundForce(snd, vol) {
   const clip = snd.cloneNode();
   clip.volume = Math.max(0, Math.min(1, vol));
   clip.play().catch(() => {});
 }
 
-// ---- 一、鼠标移动风铃音（每累计 50px，音量 0.15）-----------
+// ---- 一、鼠标移动风铃音 -------------------------------------
+// 修复：不用 clone，直接 reset 同一对象，彻底杜绝叠加爆音
+// 距离阈值提高到 80px，时间节流 220ms，限制最大播放频率
 function onMouseMoved(x, y) {
   if (mouseSoundLastX < 0) { mouseSoundLastX = x; mouseSoundLastY = y; return; }
   const dx = x - mouseSoundLastX, dy = y - mouseSoundLastY;
   mouseSoundAccum += Math.sqrt(dx*dx + dy*dy);
   mouseSoundLastX = x; mouseSoundLastY = y;
-  if (!soundEnabled || mouseSoundAccum < 50) return;
+  if (!soundEnabled || mouseSoundAccum < 80) return;
   mouseSoundAccum = 0;
-  playSound(sndChime, 0.15);
+  const now = performance.now();
+  if (now - lastChimeMoveT < 220) return;   // 时间节流，避免快速移动时叠加
+  lastChimeMoveT = now;
+  sndChimeMove.currentTime = 0;
+  sndChimeMove.volume = 0.15;
+  sndChimeMove.play().catch(() => {});
 }
 
-// ---- 二、粒子推开音（3% 概率，150ms 节流，音量 0.1）-------
-// 根本原因修复：鼠标静止时粒子仍在弹簧振动，会持续触发。
-// 加一道"鼠标必须在 300ms 内有过移动"的门槛，静止时彻底静音。
+// ---- 二、粒子推开音 -----------------------------------------
+// 修复：同上，reset 同一对象；节流从 150ms 提高到 400ms
+// 鼠标必须在 300ms 内有移动才允许触发，静止时彻底无声
 function maybePlayStarGlint() {
   if (!soundEnabled) return;
   const now = performance.now();
   if (now - lastMouseMoveTime > 300) return;  // 鼠标静止则跳过
-  if (now - lastParticleSndT < 150) return;   // 节流 150ms
+  if (now - lastParticleSndT < 400) return;   // 节流 400ms
   if (Math.random() > 0.03) return;           // 3% 概率
   lastParticleSndT = now;
-  playSound(sndChime, 0.1);
+  sndChimePush.currentTime = 0;
+  sndChimePush.volume = 0.1;
+  sndChimePush.play().catch(() => {});
 }
 
-// ---- 三、烟花绽放音（音量 0.3）-----------------------------
+// ---- 三、烟花绽放音 -----------------------------------------
+// 修复：currentTime = FIREWORK_SKIP 跳过文件开头的静音段
 function playFireworkBloom() {
-  playSound(sndFirework, 0.3);
+  if (!soundEnabled) return;
+  sndFirework.currentTime = FIREWORK_SKIP;
+  sndFirework.volume = 0.3;
+  sndFirework.play().catch(() => {});
 }
 
-// ---- 四、彩蛋八音盒音（音量 0.25）--------------------------
+// ---- 四、彩蛋八音盒音 ---------------------------------------
 function playMusicBoxMelody() {
   playSound(sndMagic, 0.25);
 }
@@ -941,7 +959,6 @@ function toggleMusic() {
   soundEnabled = musicToggleCount % 2 === 1;
 
   if (soundEnabled) {
-    // 开启：播放 switch-on，启动背景音乐，按钮变色，提示淡入
     playSound(sndSwitchOn, 0.2);
     if (bgMusicEl) bgMusicEl.play().catch(() => {});
     musicBtn.style.color       = 'rgba(255,154,178,0.88)';
@@ -950,7 +967,6 @@ function toggleMusic() {
     clearTimeout(tipTimer);
     tipTimer = setTimeout(() => { musicTip.style.opacity = '0'; }, 3000);
   } else {
-    // 关闭：播放 switch-off（不受 soundEnabled 限制），暂停背景音乐
     playSoundForce(sndSwitchOff, 0.2);
     if (bgMusicEl) bgMusicEl.pause();
     musicBtn.style.color       = '';
