@@ -21,10 +21,11 @@ const bgMusicEl      = document.getElementById('bgMusic');
 // ---- 音频状态（HTML5 Audio 本地文件版）-----------------------
 let soundEnabled     = false;
 let musicToggleCount = 0;
-let mouseSoundAccum  = 0;      // 鼠标移动距离累计
+let mouseSoundAccum  = 0;     // [节流控制] 鼠标移动距离累计，达到 80px 触发一次
 let mouseSoundLastX  = -1, mouseSoundLastY = -1;
-let lastParticleSndT = 0;      // 粒子互动音节流时间戳
-let lastChimeMoveT   = 0;      // 鼠标微风音节流时间戳
+let lastParticleSndT = 0;     // [冷却控制] 粒子互动音全局冷却时间戳
+let mouseIsMoving    = false; // [移动检测] 鼠标是否正在移动（100ms 无新事件后自动清除）
+let mouseStopTimer   = null;  // 清除 mouseIsMoving 的定时器句柄
 
 // 烟花文件跳过前置静音的秒数（根据实际文件调整）
 const FIREWORK_SKIP  = 1.19;
@@ -843,9 +844,18 @@ function animate() {
 // ============================================================
 // 二十八、事件
 // ============================================================
-window.addEventListener('mousemove', e=>{
-  mouse.x=e.clientX; mouse.y=e.clientY; lastMouseMoveTime=performance.now();
-  onMouseMoved(e.clientX, e.clientY);  // 鼠标移动叮声
+window.addEventListener('mousemove', e => {
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+  lastMouseMoveTime = performance.now();
+
+  // [移动检测] 只要 mousemove 事件触发，就标记鼠标"正在移动"
+  // 100ms 内无新事件，定时器到期后自动清除标记 → 完全静止时 mouseIsMoving = false
+  mouseIsMoving = true;
+  clearTimeout(mouseStopTimer);
+  mouseStopTimer = setTimeout(() => { mouseIsMoving = false; }, 100);
+
+  onMouseMoved(e.clientX, e.clientY); // 声音一：鼠标微风
 });
 window.addEventListener('mouseleave',()=>{ mouse.x=-9999; mouse.y=-9999; });
 
@@ -906,38 +916,69 @@ function playSoundForce(snd, vol) {
   clip.play().catch(() => {});
 }
 
-// ---- 声音一：鼠标微风（只在鼠标移动时触发）-----------------
-// 触发源：mousemove 事件（鼠标静止时事件不会触发，从根本上保证无漏音）
-// 每累计移动 100px 触发一次，同时加 180ms 时间节流避免快速移动叠声
-// 直接 reset 同一 Audio 对象，不 clone，无叠加爆音风险
+// ============================================================
+// 声音一：鼠标微风（鼠标跟随音）
+// ============================================================
+// [触发源] 只由 mousemove 事件调用，鼠标静止时此函数永远不会被调用
+// [节流控制] 累计移动距离达到 80px 才播放一次，归零后重新累计
+//   —— 纯距离节流，不加时间节流；时间节流会导致快速移动时声音被屏蔽
+// [播放方式] reset 同一 Audio 对象，无 clone，无叠加爆音
 function onMouseMoved(x, y) {
-  if (mouseSoundLastX < 0) { mouseSoundLastX = x; mouseSoundLastY = y; return; }
-  const dx = x - mouseSoundLastX, dy = y - mouseSoundLastY;
-  mouseSoundAccum += Math.sqrt(dx * dx + dy * dy);
-  mouseSoundLastX = x; mouseSoundLastY = y;
-  if (!soundEnabled || mouseSoundAccum < 100) return;
-  mouseSoundAccum = 0;
-  const now = performance.now();
-  if (now - lastChimeMoveT < 180) return;   // 最多每 180ms 一次，防快速移动叠声
-  lastChimeMoveT = now;
+  // 第一次调用：初始化上次坐标，不累计
+  if (mouseSoundLastX < 0) {
+    mouseSoundLastX = x; mouseSoundLastY = y;
+    return;
+  }
+
+  // [移动检测] 计算本次 mousemove 事件的实际移动距离
+  const dx   = x - mouseSoundLastX;
+  const dy   = y - mouseSoundLastY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  mouseSoundLastX = x;
+  mouseSoundLastY = y;
+
+  // [节流控制] 距离累加；未满 80px 则继续等待
+  mouseSoundAccum += dist;
+  if (mouseSoundAccum < 80) return;
+  mouseSoundAccum = 0; // 达到 80px：归零，开始下一轮计数
+
+  // [播放控制] 声音总开关
+  if (!soundEnabled) return;
+
+  // 播放鼠标微风音（固定音量 0.08，非常轻柔）
   sndChimeMove.currentTime = 0;
-  sndChimeMove.volume = 0.08;               // 固定 0.08，非常轻柔
+  sndChimeMove.volume = 0.08;
   sndChimeMove.play().catch(() => {});
 }
 
-// ---- 声音二：粒子被轻触（只在鼠标"正在推粒子"时触发）------
-// 触发源：Particle.update() 内部，粒子进入鼠标斥力区（距离 < 150px）时调用
-// 双重保险：① 鼠标必须在 50ms 内有移动（真正推动中，非静止振动）
-//           ② 节流 500ms，5% 概率，避免密集触发
+// ============================================================
+// 声音二：粒子被轻触（粒子互动音）
+// ============================================================
+// [触发源] 由 Particle.update() 在粒子进入鼠标斥力区（距离 < 150px）时调用
+// [移动检测] 依赖 mouseIsMoving 布尔标志——鼠标静止时标志为 false，直接跳过
+//   这是与上一版本的根本区别：不再使用时间戳判断，而是使用事件驱动的状态标志
+// [距离计算] 调用点在 Particle.update() 的 md < MOUSE_OUTER 分支内，
+//   因此只有粒子确实处于推开范围内时才会到达此函数
+// [冷却控制] 全局冷却 200ms：冷却期内任何粒子触发都被忽略，避免杂乱叠加
+// [概率控制] 5% 概率：进一步降低密度，保持若隐若现的效果
 function maybePlayStarGlint() {
+  // [播放控制] 总开关
   if (!soundEnabled) return;
+
+  // [移动检测] 鼠标静止时 mouseIsMoving = false，直接返回，绝对无声
+  if (!mouseIsMoving) return;
+
+  // [冷却控制] 全局冷却 200ms
   const now = performance.now();
-  if (now - lastMouseMoveTime > 50) return;  // 50ms 内无移动 = 鼠标静止，跳过
-  if (now - lastParticleSndT < 500) return;  // 节流 500ms
-  if (Math.random() > 0.05) return;          // 5% 概率
+  if (now - lastParticleSndT < 200) return;
+
+  // [概率控制] 5% 随机触发
+  if (Math.random() > 0.05) return;
+
+  // 播放粒子互动音（固定音量 0.12，稍清晰）
   lastParticleSndT = now;
   sndChimePush.currentTime = 0;
-  sndChimePush.volume = 0.12;               // 固定 0.12，稍清晰
+  sndChimePush.volume = 0.12;
   sndChimePush.play().catch(() => {});
 }
 
