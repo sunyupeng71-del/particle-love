@@ -18,17 +18,21 @@ const musicTip       = document.getElementById('music-tip');
 const subTextEl      = document.getElementById('sub-text');
 const bgMusicEl      = document.getElementById('bgMusic');
 
-// ---- 音频状态（v2 水晶八音盒）--------------------------------
-let audioCtx         = null;   // Web Audio Context（懒初始化）
-let masterGainNode   = null;   // 全局主音量节点（gain = 0.7）
-let ambMasterGain    = null;   // 氛围音主增益（控制整体淡入淡出）
-let ambInited        = false;  // 氛围音节点是否已创建
-const ambMidGains    = [null, null, null]; // 800/1200/1600Hz 增益
-let soundEnabled     = false;  // 全局声音开关
-let musicToggleCount = 0;
-let mouseSoundAccum  = 0;
+// ---- 音频状态（HTML5 Audio 本地文件版）-----------------------
+let soundEnabled     = false;  // 全局声音开关（♫ 按钮控制）
+let musicToggleCount = 0;      // 按钮点击计数（奇=开，偶=关）
+let mouseSoundAccum  = 0;      // 鼠标移动距离累计（50px 触发一次）
 let mouseSoundLastX  = -1, mouseSoundLastY = -1;
-let lastParticleSndT = 0;
+let lastParticleSndT = 0;      // 粒子音效节流时间戳
+
+// 预加载本地音频对象（文件需放在同目录下）
+const sndChime     = new Audio('chime.mp3');
+const sndFirework  = new Audio('firework.mpv');
+const sndMagic     = new Audio('magic.mpv');
+const sndSwitchOn  = new Audio('switch-on.mp3');
+const sndSwitchOff = new Audio('switch-off.mp3');
+// bgMusicEl 继续使用 DOM 中已有的 <audio id="bgMusic">
+if (bgMusicEl) { bgMusicEl.loop = true; bgMusicEl.volume = 0.2; }
 
 // ---- 数量常量 -----------------------------------------------
 const TOTAL      = 180;
@@ -510,8 +514,8 @@ function init() {
 // ============================================================
 function startIntro() {
   // 0-2s: 星空背景出现（canvas 自然渲染）
-  // 2s: 第一行文字淡入；同时静默预热氛围音节点
-  setTimeout(()=>{ introLine1.style.opacity='1'; initAmbient(); }, 2000);
+  // 2s: 第一行文字淡入
+  setTimeout(()=>{ introLine1.style.opacity='1'; }, 2000);
   // 3.5s: 第一行淡出
   setTimeout(()=>{ introLine1.style.opacity='0'; }, 3500);
   // 4s: 第二行淡入
@@ -879,43 +883,25 @@ musicBtn.addEventListener('click', e=>{
 window.addEventListener('resize',()=>{ startTime=performance.now(); init(); });
 
 // ============================================================
-// 音频系统 v2（水晶八音盒 · Web Audio API · 无外部文件）
+// 音频系统 v3（HTML5 Audio · 本地文件 · 零依赖）
 // ============================================================
 
-// ---- 核心工具 -----------------------------------------------
-function getAC() {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  return audioCtx;
-}
-
-// 全局主音量节点（所有声音经此输出，gain=0.7 使整体柔和）
-function getMaster() {
-  if (!masterGainNode) {
-    masterGainNode = getAC().createGain();
-    masterGainNode.gain.value = 0.7;
-    masterGainNode.connect(getAC().destination);
-  }
-  return masterGainNode;
-}
-
-// playTone(frequency, volume, startTimeOffset, duration, type)
-// 通用音符工具，所有音效均通过 masterGain 输出
-function playTone(frequency, volume, startTimeOffset, duration, type = 'sine') {
+// 通用播放：clone 节点避免重叠冲突（短音效高频触发安全）
+function playSound(snd, vol) {
   if (!soundEnabled) return;
-  const ac  = getAC();
-  const t   = ac.currentTime + (startTimeOffset || 0);
-  const osc = ac.createOscillator();
-  const g   = ac.createGain();
-  osc.type  = type;
-  osc.frequency.setValueAtTime(frequency, t);
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.linearRampToValueAtTime(volume, t + Math.min(0.01, duration * 0.1));
-  g.gain.exponentialRampToValueAtTime(0.0001, t + duration);
-  osc.connect(g); g.connect(getMaster());
-  osc.start(t); osc.stop(t + duration + 0.02);
+  const clip = snd.cloneNode();
+  clip.volume = Math.max(0, Math.min(1, vol));
+  clip.play().catch(() => {});
 }
 
-// ---- 一、水晶风铃（鼠标移动，每 50px）---------------------
+// 无视 soundEnabled 直接播放（仅用于关闭确认音）
+function playSoundForce(snd, vol) {
+  const clip = snd.cloneNode();
+  clip.volume = Math.max(0, Math.min(1, vol));
+  clip.play().catch(() => {});
+}
+
+// ---- 一、鼠标移动风铃音（每累计 50px，音量 0.15）-----------
 function onMouseMoved(x, y) {
   if (mouseSoundLastX < 0) { mouseSoundLastX = x; mouseSoundLastY = y; return; }
   const dx = x - mouseSoundLastX, dy = y - mouseSoundLastY;
@@ -923,242 +909,37 @@ function onMouseMoved(x, y) {
   mouseSoundLastX = x; mouseSoundLastY = y;
   if (!soundEnabled || mouseSoundAccum < 50) return;
   mouseSoundAccum = 0;
-
-  const ac   = getAC();
-  const now  = ac.currentTime;
-  // 基频 1200-1800Hz + 随机 ±10Hz 偏移
-  const base = 1200 + Math.random()*600 + (Math.random()-0.5)*20;
-  const dur  = 0.20 + Math.random()*0.10;
-  const atk  = 0.010;
-
-  // 基频 + 2倍泛音(×0.3) + 3倍泛音(×0.1)
-  [[base, 0.04], [base*2, 0.04*0.3], [base*3, 0.04*0.1]].forEach(([freq, vol]) => {
-    const osc = ac.createOscillator();
-    const g   = ac.createGain();
-    osc.type  = 'sine';
-    osc.frequency.value = freq;
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.linearRampToValueAtTime(vol, now + atk);   // 10ms 柔和起音
-    g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
-    osc.connect(g); g.connect(getMaster());
-    osc.start(now); osc.stop(now + dur + 0.01);
-  });
+  playSound(sndChime, 0.15);
 }
 
-// ---- 二、星光闪烁（粒子推开，3% 概率）--------------------
+// ---- 二、粒子推开音（3% 概率，150ms 节流，音量 0.1）-------
 function maybePlayStarGlint() {
   if (!soundEnabled) return;
   const now = performance.now();
-  if (now - lastParticleSndT < 150) return;  // 节流 150ms
+  if (now - lastParticleSndT < 150) return;
   if (Math.random() > 0.03) return;
   lastParticleSndT = now;
-
-  const ac   = getAC();
-  const t    = ac.currentTime;
-  const freq = 2000 + Math.random()*1000;
-  const dur  = 0.08 + Math.random()*0.04;
-  const osc  = ac.createOscillator();
-  const g    = ac.createGain();
-  osc.type   = 'sine';
-  osc.frequency.value = freq;
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.linearRampToValueAtTime(0.02, t + 0.005);   // 极快起音
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  osc.connect(g); g.connect(getMaster());
-  osc.start(t); osc.stop(t + dur + 0.01);
+  playSound(sndChime, 0.1);
 }
 
-// ---- 三、烟花温暖绽放（点击爆炸）--------------------------
+// ---- 三、烟花绽放音（音量 0.3）-----------------------------
 function playFireworkBloom() {
-  if (!soundEnabled) return;
-  const ac   = getAC();
-  const now  = ac.currentTime;
-  const atk  = 0.080;   // 80ms 慢起音
-  const sus  = 0.200;   // 200ms 保持
-  const dec  = 0.800;   // 800ms 缓缓衰减
-  const total = atk + sus + dec;
-
-  // 三个正弦波：C4(260) + C5(520) + G5(780)
-  [260, 520, 780].forEach(baseFreq => {
-    const osc = ac.createOscillator();
-    const g   = ac.createGain();
-    osc.type  = 'sine';
-    // 衰减过程中频率缓慢下降一个半音（×0.944）
-    osc.frequency.setValueAtTime(baseFreq, now);
-    osc.frequency.setValueAtTime(baseFreq, now + atk + sus);
-    osc.frequency.exponentialRampToValueAtTime(baseFreq * 0.944, now + total);
-    const v = 0.10 / 3;
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.linearRampToValueAtTime(v, now + atk);
-    g.gain.setValueAtTime(v, now + atk + sus);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + total);
-    osc.connect(g); g.connect(getMaster());
-    osc.start(now); osc.stop(now + total + 0.05);
-  });
-
-  // 极轻白噪声（仅起音阶段，模拟烟花散开的沙沙感）
-  const bLen = (ac.sampleRate * (atk + 0.05)) | 0;
-  const buf  = ac.createBuffer(1, bLen, ac.sampleRate);
-  const data = buf.getChannelData(0);
-  for (let i = 0; i < bLen; i++) data[i] = Math.random()*2 - 1;
-  const noise = ac.createBufferSource();
-  noise.buffer = buf;
-  const ng = ac.createGain();
-  ng.gain.setValueAtTime(0.0001, now);
-  ng.gain.linearRampToValueAtTime(0.020, now + 0.020);
-  ng.gain.exponentialRampToValueAtTime(0.0001, now + atk);
-  noise.connect(ng); ng.connect(getMaster());
-  noise.start(now);
+  playSound(sndFirework, 0.3);
 }
 
-// ---- 四、八音盒旋律（彩蛋一：C5→E5→G5→C6）--------------
+// ---- 四、彩蛋八音盒音（音量 0.25）--------------------------
 function playMusicBoxMelody() {
-  if (!soundEnabled) return;
-  const ac    = getAC();
-  const notes = [523, 659, 784, 1047]; // C5 E5 G5 C6
-  notes.forEach((freq, i) => {
-    const t0     = ac.currentTime + i * 0.280; // 200ms音 + 80ms间隔
-    const isLast = i === notes.length - 1;
-    const decDur = isLast ? 0.400 : 0.150;
-    const total  = 0.020 + 0.100 + decDur;
-
-    // 基频 + 2倍泛音
-    [freq, freq*2].forEach((f, hi) => {
-      const vol = hi === 0 ? 0.06 : 0.06*0.30;
-      const osc = ac.createOscillator();
-      const g   = ac.createGain();
-      osc.type  = 'sine';
-      osc.frequency.setValueAtTime(f, t0);
-      // 最后一个音（C6）在衰减尾段频率微微上漂
-      if (isLast) {
-        osc.frequency.setValueAtTime(f, t0 + total - 0.10);
-        osc.frequency.linearRampToValueAtTime(f * 1.018, t0 + total);
-      }
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.linearRampToValueAtTime(vol, t0 + 0.020);
-      g.gain.setValueAtTime(vol, t0 + 0.120);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + total);
-      osc.connect(g); g.connect(getMaster());
-      osc.start(t0); osc.stop(t0 + total + 0.02);
-    });
-  });
+  playSound(sndMagic, 0.25);
 }
 
-// ---- 五、星空氛围音（重新设计）----------------------------
-function initAmbient() {
-  if (ambInited) return;
-  ambInited = true;
-  const ac  = getAC();
-
-  // 氛围总线：所有氛围层经此淡入淡出
-  ambMasterGain = ac.createGain();
-  ambMasterGain.gain.value = 0;
-  ambMasterGain.connect(getMaster());
-
-  // 底层：65Hz (C2)，呼吸包络：0.01↔0.015，12s 周期
-  const baseOsc  = ac.createOscillator();
-  const baseGain = ac.createGain();
-  baseOsc.type   = 'sine';
-  baseOsc.frequency.value = 65;
-  baseGain.gain.value     = 0.0125; // 呼吸中心
-  baseOsc.connect(baseGain); baseGain.connect(ambMasterGain);
-  baseOsc.start();
-  // LFO 调制增益：±0.0025（12s 周期）
-  const lfo     = ac.createOscillator();
-  const lfoG    = ac.createGain();
-  lfo.type      = 'sine';
-  lfo.frequency.value = 1 / 12;
-  lfoG.gain.value     = 0.0025;
-  lfo.connect(lfoG); lfoG.connect(baseGain.gain);
-  lfo.start();
-
-  // 中层：800 / 1200 / 1600Hz，各自独立随机闪烁
-  const midCfg = [
-    { freq:  800, minT: 3000, maxT:  6000, minV: 0.005, maxV: 0.010, minD: 0.5, maxD: 1.2 },
-    { freq: 1200, minT: 5000, maxT:  8000, minV: 0.003, maxV: 0.008, minD: 0.3, maxD: 0.8 },
-    { freq: 1600, minT: 7000, maxT: 12000, minV: 0.002, maxV: 0.006, minD: 0.2, maxD: 0.5 },
-  ];
-  midCfg.forEach((cfg, idx) => {
-    const osc = ac.createOscillator();
-    const g   = ac.createGain();
-    osc.type  = 'sine';
-    osc.frequency.value = cfg.freq;
-    g.gain.value = 0;
-    osc.connect(g); g.connect(ambMasterGain);
-    osc.start();
-    ambMidGains[idx] = g;
-
-    function flicker() {
-      if (!ambInited) return;
-      const t   = getAC().currentTime;
-      const vol = cfg.minV + Math.random()*(cfg.maxV - cfg.minV);
-      const dur = cfg.minD + Math.random()*(cfg.maxD - cfg.minD);
-      const gp  = ambMidGains[idx].gain;
-      // 柔和正弦包络（线性 ramp 近似）：上升 40%，下降 60%
-      gp.cancelScheduledValues(t);
-      gp.setValueAtTime(0, t);
-      gp.linearRampToValueAtTime(vol, t + dur * 0.40);
-      gp.linearRampToValueAtTime(0,   t + dur);
-      setTimeout(flicker, cfg.minT + Math.random()*(cfg.maxT - cfg.minT));
-    }
-    // 各层错开初始延迟，避免同时爆发
-    setTimeout(flicker, cfg.minT * 0.5 + Math.random() * (cfg.maxT - cfg.minT));
-  });
-}
-
-// 氛围音淡入（30s 缓慢至稳定）
-function fadeInAmbient() {
-  initAmbient();
-  const ac = getAC();
-  if (ac.state === 'suspended') ac.resume();
-  const t = ac.currentTime;
-  ambMasterGain.gain.cancelScheduledValues(t);
-  ambMasterGain.gain.setValueAtTime(ambMasterGain.gain.value, t);
-  ambMasterGain.gain.linearRampToValueAtTime(1.0, t + 30);
-}
-
-// 氛围音淡出（2s）
-function fadeOutAmbient() {
-  if (!ambMasterGain) return;
-  const ac = getAC();
-  const t  = ac.currentTime;
-  ambMasterGain.gain.cancelScheduledValues(t);
-  ambMasterGain.gain.setValueAtTime(ambMasterGain.gain.value, t);
-  ambMasterGain.gain.linearRampToValueAtTime(0, t + 2.0);
-}
-
-// ---- 六、按钮确认音（开：C5→E5 上行；关：E5→C5 下行）------
-function playToggleSound(opening) {
-  const ac    = getAC();
-  const now   = ac.currentTime;
-  const pairs = opening ? [523, 659] : [659, 523];
-  pairs.forEach((freq, i) => {
-    const t0 = now + i * 0.12;
-    [freq, freq*2].forEach((f, hi) => {
-      const vol = hi === 0 ? 0.04 : 0.04*0.3;
-      const osc = ac.createOscillator();
-      const g   = ac.createGain();
-      osc.type  = 'sine';
-      osc.frequency.value = f;
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.linearRampToValueAtTime(vol, t0 + 0.015);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.10);
-      osc.connect(g); g.connect(getMaster());
-      osc.start(t0); osc.stop(t0 + 0.12);
-    });
-  });
-}
-
-// ---- 七、音符按钮切换（奇=开，偶=关，循环）-----------------
+// ---- 五、♫ 按钮切换（奇=开，偶=关）------------------------
 function toggleMusic() {
   musicToggleCount++;
   soundEnabled = musicToggleCount % 2 === 1;
 
   if (soundEnabled) {
-    const ac = getAC();
-    if (ac.state === 'suspended') ac.resume();
-    fadeInAmbient();
-    playToggleSound(true);
+    // 开启：播放 switch-on，启动背景音乐，按钮变色，提示淡入
+    playSound(sndSwitchOn, 0.2);
     if (bgMusicEl) bgMusicEl.play().catch(() => {});
     musicBtn.style.color       = 'rgba(255,154,178,0.88)';
     musicBtn.style.borderColor = 'rgba(255,154,178,0.45)';
@@ -1166,8 +947,8 @@ function toggleMusic() {
     clearTimeout(tipTimer);
     tipTimer = setTimeout(() => { musicTip.style.opacity = '0'; }, 3000);
   } else {
-    playToggleSound(false);
-    fadeOutAmbient();
+    // 关闭：播放 switch-off（不受 soundEnabled 限制），暂停背景音乐
+    playSoundForce(sndSwitchOff, 0.2);
     if (bgMusicEl) bgMusicEl.pause();
     musicBtn.style.color       = '';
     musicBtn.style.borderColor = '';
