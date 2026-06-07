@@ -25,12 +25,12 @@ let mouseSoundAccum  = 0;      // 鼠标移动距离累计（50px 触发一次�
 let mouseSoundLastX  = -1, mouseSoundLastY = -1;
 let lastParticleSndT = 0;      // 粒子音效节流时间戳
 
-// 预加载本地音频对象（文件需放在同目录下）
-const sndChime     = new Audio('chime.mp3');
-const sndFirework  = new Audio('firework.mpv');
-const sndMagic     = new Audio('magic.mpv');
-const sndSwitchOn  = new Audio('switch-on.mp3');
-const sndSwitchOff = new Audio('switch-off.mp3');
+// 预加载本地音频对象（文件位于 音乐/ 子目录）
+const sndChime     = new Audio('音乐/chime.mp3');
+const sndFirework  = new Audio('音乐/firework.wav');
+const sndMagic     = new Audio('音乐/magic.wav');
+const sndSwitchOn  = new Audio('音乐/switch-on.mp3');
+const sndSwitchOff = new Audio('音乐/switch-off.mp3');
 // bgMusicEl 继续使用 DOM 中已有的 <audio id="bgMusic">
 if (bgMusicEl) { bgMusicEl.loop = true; bgMusicEl.volume = 0.2; }
 
