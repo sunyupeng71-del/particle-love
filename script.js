@@ -913,11 +913,14 @@ function onMouseMoved(x, y) {
 }
 
 // ---- 二、粒子推开音（3% 概率，150ms 节流，音量 0.1）-------
+// 根本原因修复：鼠标静止时粒子仍在弹簧振动，会持续触发。
+// 加一道"鼠标必须在 300ms 内有过移动"的门槛，静止时彻底静音。
 function maybePlayStarGlint() {
   if (!soundEnabled) return;
   const now = performance.now();
-  if (now - lastParticleSndT < 150) return;
-  if (Math.random() > 0.03) return;
+  if (now - lastMouseMoveTime > 300) return;  // 鼠标静止则跳过
+  if (now - lastParticleSndT < 150) return;   // 节流 150ms
+  if (Math.random() > 0.03) return;           // 3% 概率
   lastParticleSndT = now;
   playSound(sndChime, 0.1);
 }
