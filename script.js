@@ -21,19 +21,47 @@ const bgMusicEl      = document.getElementById('bgMusic');
 // ---- 音频状态（HTML5 Audio 本地文件版）-----------------------
 let soundEnabled     = false;
 let musicToggleCount = 0;
-let mouseSoundAccum  = 0;     // [节流控制] 鼠标移动距离累计，达到 80px 触发一次
+let mouseSoundAccum  = 0;     // [节流控制] 鼠标移动距离累计，达到 100px 触发一次
 let mouseSoundLastX  = -1, mouseSoundLastY = -1;
-let lastParticleSndT = 0;     // [冷却控制] 粒子互动音全局冷却时间戳
-let mouseIsMoving    = false; // [移动检测] 鼠标是否正在移动（100ms 无新事件后自动清除）
-let mouseStopTimer   = null;  // 清除 mouseIsMoving 的定时器句柄
+let lastParticleSndT = 0;     // [冷却控制] 粒子互动音冷却时间戳（200ms）
 
 // 烟花文件跳过前置静音的秒数（根据实际文件调整）
 const FIREWORK_SKIP  = 1.19;
 
-// 预加载本地音频对象（文件位于 音乐/ 子目录）
-// 风铃拆成两个独立对象：各自 reset 复用，彻底避免 clone 叠加爆音
-const sndChimeMove = new Audio('音乐/chime.mp3'); // 鼠标移动
-const sndChimePush = new Audio('音乐/chime.mp3'); // 粒子推开
+// ------------------------------------------------------------
+// 声部轮转池（voice pool）
+// ------------------------------------------------------------
+// 【为什么需要它 —— 这是“移动不响、停下才响”的根本修复】
+// 如果只用一个 Audio 对象，每次触发都执行 currentTime=0 把播放头拉回开头。
+// 鼠标持续移动时触发很密集，后一次会在前一次还没播完时打断它，
+// 导致移动中的声音被自己反复掐断、几乎听不见；一旦停下，最后一次
+// 才得以完整播放 —— 听感就成了“一停才响”。
+//
+// 解决：为高频音效准备多个副本，每次触发轮流用下一个副本，
+// 相邻触发落在不同对象上、互不打断。池子大小有限（4 个），
+// 最多同时 4 层 × 0.08 ≈ 0.32，绝不会叠加爆音。
+function makeVoicePool(src, size) {
+  const pool = [];
+  for (let i = 0; i < size; i++) {
+    const a = new Audio(src);
+    a.preload = 'auto';
+    pool.push(a);
+  }
+  let idx = 0;
+  return function (vol) {
+    const a = pool[idx];
+    idx = (idx + 1) % size;                 // 轮转到下一个声部
+    a.volume = Math.max(0, Math.min(1, vol));
+    a.currentTime = 0;
+    a.play().catch(() => {});
+  };
+}
+
+// 两类风铃各用一个独立的轮转池（同源文件 chime.mp3）
+const playChimeMove = makeVoicePool('音乐/chime.mp3', 4); // 声音一：鼠标微风
+const playChimePush = makeVoicePool('音乐/chime.mp3', 3); // 声音二：粒子互动
+
+// 低频一次性音效：单对象即可（不存在自我打断问题）
 const sndFirework  = new Audio('音乐/firework.wav');
 const sndMagic     = new Audio('音乐/magic.wav');
 const sndSwitchOn  = new Audio('音乐/switch-on.mp3');
@@ -849,12 +877,6 @@ window.addEventListener('mousemove', e => {
   mouse.y = e.clientY;
   lastMouseMoveTime = performance.now();
 
-  // [移动检测] 只要 mousemove 事件触发，就标记鼠标"正在移动"
-  // 100ms 内无新事件，定时器到期后自动清除标记 → 完全静止时 mouseIsMoving = false
-  mouseIsMoving = true;
-  clearTimeout(mouseStopTimer);
-  mouseStopTimer = setTimeout(() => { mouseIsMoving = false; }, 100);
-
   onMouseMoved(e.clientX, e.clientY); // 声音一：鼠标微风
 });
 window.addEventListener('mouseleave',()=>{ mouse.x=-9999; mouse.y=-9999; });
@@ -919,67 +941,67 @@ function playSoundForce(snd, vol) {
 // ============================================================
 // 声音一：鼠标微风（鼠标跟随音）
 // ============================================================
-// [触发源] 只由 mousemove 事件调用，鼠标静止时此函数永远不会被调用
-// [节流控制] 累计移动距离达到 80px 才播放一次，归零后重新累计
-//   —— 纯距离节流，不加时间节流；时间节流会导致快速移动时声音被屏蔽
-// [播放方式] reset 同一 Audio 对象，无 clone，无叠加爆音
+// 【触发源】只由 mousemove 事件调用 —— 鼠标完全静止时浏览器不派发
+//   mousemove，本函数根本不会执行，从源头保证“静止绝对无声”。
+// 【移动检测】用本次事件的真实位移 dist 累加，dist 只可能 ≥ 0，
+//   不会把静止误判为移动。
+// 【节流控制】累计位移满 100px 播放一次，随即归零重新累计。
+//   纯距离节流，不叠加时间节流（时间节流会在快速移动时误伤声音）。
+// 【播放方式】走声部轮转池 playChimeMove，相邻触发用不同副本，
+//   不会自我打断 —— 这是“移动才响”得以成立的关键。
 function onMouseMoved(x, y) {
-  // 第一次调用：初始化上次坐标，不累计
+  // 首次调用：仅记录起点坐标，不计入位移
   if (mouseSoundLastX < 0) {
     mouseSoundLastX = x; mouseSoundLastY = y;
     return;
   }
 
-  // [移动检测] 计算本次 mousemove 事件的实际移动距离
+  // [移动检测] 本次 mousemove 的实际位移
   const dx   = x - mouseSoundLastX;
   const dy   = y - mouseSoundLastY;
   const dist = Math.sqrt(dx * dx + dy * dy);
   mouseSoundLastX = x;
   mouseSoundLastY = y;
 
-  // [节流控制] 距离累加；未满 80px 则继续等待
+  // [节流控制] 累加位移，未满 100px 继续等待
   mouseSoundAccum += dist;
-  if (mouseSoundAccum < 80) return;
-  mouseSoundAccum = 0; // 达到 80px：归零，开始下一轮计数
+  if (mouseSoundAccum < 100) return;
+  mouseSoundAccum = 0;                 // 满 100px：归零，开始下一轮
 
-  // [播放控制] 声音总开关
+  // [播放控制] 总开关；轮转池播放，音量 0.08（极轻柔）
   if (!soundEnabled) return;
-
-  // 播放鼠标微风音（固定音量 0.08，非常轻柔）
-  sndChimeMove.currentTime = 0;
-  sndChimeMove.volume = 0.08;
-  sndChimeMove.play().catch(() => {});
+  playChimeMove(0.08);
 }
 
 // ============================================================
-// 声音二：粒子被轻触（粒子互动音）
+// 声音二：粒子互动音（靠近增强）
 // ============================================================
-// [触发源] 由 Particle.update() 在粒子进入鼠标斥力区（距离 < 150px）时调用
-// [移动检测] 依赖 mouseIsMoving 布尔标志——鼠标静止时标志为 false，直接跳过
-//   这是与上一版本的根本区别：不再使用时间戳判断，而是使用事件驱动的状态标志
-// [距离计算] 调用点在 Particle.update() 的 md < MOUSE_OUTER 分支内，
-//   因此只有粒子确实处于推开范围内时才会到达此函数
-// [冷却控制] 全局冷却 200ms：冷却期内任何粒子触发都被忽略，避免杂乱叠加
-// [概率控制] 5% 概率：进一步降低密度，保持若隐若现的效果
+// 【触发源】由 Particle.update() 在粒子落入鼠标斥力区（距离 < 150px，
+//   即 MOUSE_OUTER）时逐粒子调用 —— 粒子自由漂浮、不在范围内时根本
+//   不会调用本函数。这就是“距离 < 150px 才触发”的保证。
+// 【移动检测】额外加一道闸：若 120ms 内没有任何 mousemove 事件，
+//   视为鼠标静止 → 直接返回。这样即便光标静止地压在爱心上、粒子
+//   仍处于 150px 内，也不会出声，满足“完全静止应无声”。
+// 【冷却控制】触发后 200ms 内忽略一切互动音，避免众多粒子同帧触发
+//   导致密集叠加。
+// 【概率控制】5% 概率，使其偶发、若隐若现。
 function maybePlayStarGlint() {
   // [播放控制] 总开关
   if (!soundEnabled) return;
 
-  // [移动检测] 鼠标静止时 mouseIsMoving = false，直接返回，绝对无声
-  if (!mouseIsMoving) return;
-
-  // [冷却控制] 全局冷却 200ms
+  // [移动检测] 120ms 内无 mousemove → 鼠标静止 → 不触发
   const now = performance.now();
+  if (now - lastMouseMoveTime > 120) return;
+
+  // [冷却控制] 距上次互动音不足 200ms → 跳过
   if (now - lastParticleSndT < 200) return;
 
   // [概率控制] 5% 随机触发
   if (Math.random() > 0.05) return;
 
-  // 播放粒子互动音（固定音量 0.12，稍清晰）
+  // 满足全部条件：轮转池播放，音量 0.12（比微风略清晰）
   lastParticleSndT = now;
-  sndChimePush.currentTime = 0;
-  sndChimePush.volume = 0.12;
-  sndChimePush.play().catch(() => {});
+  playChimePush(0.12);
 }
 
 // ---- 三、烟花绽放音 -----------------------------------------
