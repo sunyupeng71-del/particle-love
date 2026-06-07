@@ -1,66 +1,73 @@
 /* ============================================================
-   给范晓语 — style.css（梦境升级版）
+   给范晓语 — style.css（宇宙终极版）
    ============================================================ */
 
 *, *::before, *::after {
-  margin: 0;
-  padding: 0;
+  margin: 0; padding: 0;
   box-sizing: border-box;
 }
 
 html, body {
-  width: 100%;
-  height: 100%;
+  width: 100%; height: 100%;
   overflow: hidden;
   background: #080812;
-  /* 防止移动端双击缩放 */
+  /* 移动端禁用双击缩放和长按选择 */
   touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* ============================================================
-   Canvas：最底层，全屏
+   Canvas
    ============================================================ */
 #canvas {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
+  inset: 0;
+  width: 100%; height: 100%;
   display: block;
 }
 
 /* ============================================================
-   入场欢迎语覆盖层
+   入场文字层
    ============================================================ */
-#intro-screen {
+#intro-wrap {
   position: fixed;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 28px;
   pointer-events: none;
   z-index: 10;
-  /* JS 控制 opacity 过渡 */
-  transition: opacity 1s ease;
 }
 
-#intro-text {
-  font-family: 'Dancing Script', 'Noto Serif SC', cursive;
-  font-size: clamp(28px, 6vw, 64px);
-  font-weight: 500;
-  color: #fff5f8;
-  letter-spacing: 0.12em;
-  opacity: 0;           /* 初始透明，JS 淡入 */
-  transition: opacity 1.2s ease;
+.intro-line {
+  font-family: 'Noto Serif SC', 'Cormorant Garamond', serif;
+  font-weight: 300;
+  color: rgba(255, 240, 248, 0.92);
+  letter-spacing: 0.22em;
+  opacity: 0;
+  /* JS 通过改 opacity 控制淡入淡出 */
+  transition: opacity 1s ease;
+
+  /* 第一行小字 */
+  font-size: clamp(13px, 2vw, 20px);
+
   text-shadow:
-    0 0  10px rgba(255, 255, 255, 0.90),
-    0 0  28px rgba(255, 107, 157, 0.75),
-    0 0  55px rgba(255, 107, 157, 0.35);
-  white-space: nowrap;
+    0 0  8px rgba(255, 255, 255, 0.70),
+    0 0 22px rgba(200, 150, 220, 0.50);
+}
+
+#intro-line2 {
+  /* 第二行稍大，包含名字 */
+  font-size: clamp(14px, 2.2vw, 22px);
+  letter-spacing: 0.14em;
 }
 
 /* ============================================================
-   主文字组（爱心下方）
+   主文字组
    ============================================================ */
 #text-group {
   position: fixed;
@@ -69,211 +76,213 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   pointer-events: none;
-  user-select: none;
-  top: 65%;             /* JS 会精确覆盖此值 */
-  opacity: 0;           /* 入场动画前不可见 */
-  transition: opacity 0.5s ease;
+  top: 65%;           /* JS 会精确覆盖 */
+  opacity: 0;
+  transition: opacity 0.8s ease;
   z-index: 5;
-  animation: breathe 3s ease-in-out infinite;
-  /* 初始暂停，JS 在入场完成后启动 */
+  animation: breathe 3.2s ease-in-out infinite;
   animation-play-state: paused;
 }
 
 #name-text {
   font-family: 'Dancing Script', 'Noto Serif SC', cursive;
-  font-size: clamp(40px, 6vw, 64px);
+  font-size: clamp(42px, 6.5vw, 68px);
   font-weight: 600;
   color: #fff5f8;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   line-height: 1;
   text-shadow:
     0 0  8px rgba(255, 255, 255, 0.95),
-    0 0 25px rgba(255, 107, 157, 0.85),
-    0 0 50px rgba(255, 107, 157, 0.40);
+    0 0 26px rgba(255, 107, 157, 0.88),
+    0 0 55px rgba(255, 107, 157, 0.42);
 }
 
 #sub-text {
-  font-family: 'Noto Serif SC', 'Cormorant Garamond', serif;
-  font-size: clamp(12px, 1.8vw, 18px);
+  font-family: 'Noto Serif SC', serif;
+  font-size: clamp(12px, 1.8vw, 17px);
   font-weight: 300;
-  color: rgba(255, 220, 235, 0.88);
-  letter-spacing: 0.18em;
+  color: rgba(255, 218, 235, 0.90);
+  letter-spacing: 0.20em;
   line-height: 1;
   text-shadow:
-    0 0  6px rgba(255, 255, 255, 0.70),
-    0 0 18px rgba(255, 107, 157, 0.55);
-  /* 逐字淡入时每个字是 span，整体容器显示 */
+    0 0  6px rgba(255, 255, 255, 0.65),
+    0 0 16px rgba(255, 107, 157, 0.50);
 }
 
-/* 每个逐字淡入的字符包装 */
+/* 逐字淡入的 span */
 #sub-text span {
   display: inline-block;
   opacity: 0;
-  transition: opacity 0.4s ease;
+  transition: opacity 0.5s ease;
 }
 
 .deco-line {
-  width: 110px;
-  height: 1px;
+  width: 115px; height: 1px;
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(255, 154, 178, 0.65) 25%,
-    rgba(255, 107, 157, 0.90) 50%,
-    rgba(255, 154, 178, 0.65) 75%,
+    rgba(255, 154, 178, 0.60) 25%,
+    rgba(255, 107, 157, 0.92) 50%,
+    rgba(255, 154, 178, 0.60) 75%,
     transparent 100%
   );
 }
 
 @keyframes breathe {
-  0%   { opacity: 0.45; }
-  50%  { opacity: 1.00; }
-  100% { opacity: 0.45; }
+  0%, 100% { opacity: 0.42; }
+  50%       { opacity: 1.00; }
 }
 
 /* ============================================================
-   彩蛋秘密消息
+   彩蛋消息（共用基础样式）
    ============================================================ */
-#secret-msg {
+.egg-msg, #egg1-msg, #egg2-msg, #egg3-msg {
   position: fixed;
-  top: 50%;
-  left: 50%;
+  left: 50%; top: 50%;
   transform: translate(-50%, -50%);
   font-family: 'Dancing Script', 'Noto Serif SC', cursive;
-  font-size: clamp(22px, 4vw, 44px);
+  font-size: clamp(20px, 3.5vw, 42px);
   font-weight: 600;
-  color: #fff8e0;
   letter-spacing: 0.12em;
   white-space: nowrap;
   pointer-events: none;
   user-select: none;
   opacity: 0;
   z-index: 20;
-  text-shadow:
-    0 0 10px rgba(255, 220, 100, 0.90),
-    0 0 30px rgba(255, 180, 50,  0.70),
-    0 0 60px rgba(255, 150, 30,  0.40);
   transition: opacity 1.2s ease;
 }
 
+/* 彩蛋一：金色 */
+#egg1-msg {
+  color: #fff8e0;
+  text-shadow:
+    0 0 10px rgba(255, 220, 100, 0.92),
+    0 0 30px rgba(255, 180, 50,  0.72),
+    0 0 65px rgba(255, 150, 30,  0.42);
+}
+
+/* 彩蛋二：星空蓝白 */
+#egg2-msg {
+  color: #e8f4ff;
+  font-size: clamp(18px, 3vw, 36px);
+  text-shadow:
+    0 0 10px rgba(180, 220, 255, 0.90),
+    0 0 28px rgba(120, 180, 255, 0.65),
+    0 0 55px rgba(80,  140, 255, 0.35);
+}
+
+/* 彩蛋三：极小半透明 */
+#egg3-msg {
+  font-family: 'Noto Serif SC', serif;
+  font-size: clamp(11px, 1.5vw, 16px);
+  font-weight: 300;
+  color: rgba(255, 230, 245, 0.75);
+  letter-spacing: 0.28em;
+  top: auto; bottom: 80px;
+  transform: translateX(-50%);
+  text-shadow: none;
+}
+
 /* ============================================================
-   烟花名字浮现
+   烟花名字
    ============================================================ */
 #firework-name {
   position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%) scale(0.6);
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%) scale(0.55);
   font-family: 'Dancing Script', 'Noto Serif SC', cursive;
-  font-size: clamp(32px, 5vw, 56px);
+  font-size: clamp(32px, 5vw, 58px);
   font-weight: 600;
   color: #ffffff;
   letter-spacing: 0.15em;
   pointer-events: none;
-  user-select: none;
   opacity: 0;
   z-index: 15;
   text-shadow:
     0 0  8px rgba(255, 255, 255, 1.00),
-    0 0 22px rgba(255, 130, 170, 0.90),
-    0 0 45px rgba(255, 100, 150, 0.55);
-  /* JS 动态控制 transform + opacity */
-  transition: none;
+    0 0 22px rgba(255, 130, 170, 0.92),
+    0 0 48px rgba(255, 100, 150, 0.58);
 }
 
 /* ============================================================
-   音乐按钮（右下角）
+   音乐按钮
    ============================================================ */
 #music-btn {
   position: fixed;
-  bottom: 48px;
-  right: 24px;
-  width: 40px;
-  height: 40px;
+  bottom: 50px; right: 24px;
+  width: 40px; height: 40px;
   background: none;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 50%;
-  color: rgba(255, 255, 255, 0.40);
-  font-size: 18px;
+  color: rgba(255, 255, 255, 0.38);
+  font-size: 17px;
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; align-items: center; justify-content: center;
   z-index: 30;
   transition: color 0.3s, border-color 0.3s, transform 0.3s;
-  line-height: 1;
-  padding: 0;
+  padding: 0; line-height: 1;
 }
-
 #music-btn:hover {
-  color: rgba(255, 154, 178, 0.85);
-  border-color: rgba(255, 154, 178, 0.45);
+  color: rgba(255, 154, 178, 0.88);
+  border-color: rgba(255, 154, 178, 0.42);
   transform: scale(1.12);
 }
 
-/* 音乐气泡提示 */
 #music-tip {
   position: fixed;
-  bottom: 96px;
-  right: 20px;
-  max-width: 220px;
+  bottom: 98px; right: 20px;
+  max-width: 230px;
   padding: 10px 14px;
-  background: rgba(20, 10, 35, 0.85);
-  border: 1px solid rgba(255, 154, 178, 0.25);
+  background: rgba(16, 8, 32, 0.88);
+  border: 1px solid rgba(255, 154, 178, 0.22);
   border-radius: 12px 12px 2px 12px;
   font-family: 'Noto Serif SC', serif;
-  font-size: 12px;
-  font-weight: 300;
-  color: rgba(255, 220, 235, 0.88);
-  line-height: 1.6;
-  letter-spacing: 0.05em;
+  font-size: 12px; font-weight: 300;
+  color: rgba(255, 218, 235, 0.90);
+  line-height: 1.65; letter-spacing: 0.05em;
   pointer-events: none;
-  opacity: 0;
-  z-index: 30;
+  opacity: 0; z-index: 30;
   transition: opacity 0.4s ease;
 }
 
 /* ============================================================
-   页脚（仿代码注释风格）
+   隐藏签名
    ============================================================ */
 #page-footer {
   position: fixed;
-  bottom: 14px;
-  right: 20px;
+  bottom: 14px; right: 20px;
   font-family: 'Courier New', 'Consolas', monospace;
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.16);
   letter-spacing: 0.05em;
-  pointer-events: none;
-  user-select: none;
+  pointer-events: all;
+  cursor: default;
   z-index: 5;
+  transition: color 0.4s ease;
+}
+#page-footer:hover {
+  color: rgba(255, 200, 220, 0.55);
 }
 
 /* ============================================================
    移动端适配
    ============================================================ */
 @media (max-width: 480px) {
-  #name-text {
-    font-size: clamp(36px, 10vw, 52px);
+  #intro-line2 {
+    font-size: clamp(12px, 4vw, 18px);
+    letter-spacing: 0.08em;
+    padding: 0 20px;
+    text-align: center;
+    white-space: normal;
   }
-  #sub-text {
-    font-size: clamp(11px, 3.2vw, 15px);
-    letter-spacing: 0.12em;
-  }
-  #music-btn {
-    bottom: 40px;
-    right: 16px;
-  }
-  #music-tip {
-    right: 16px;
-    max-width: 180px;
-    font-size: 11px;
-  }
-  #page-footer {
-    font-size: 9px;
-    bottom: 10px;
-    right: 16px;
-  }
+  #name-text    { font-size: clamp(38px, 11vw, 54px); }
+  #sub-text     { font-size: clamp(11px, 3.5vw, 15px); letter-spacing: 0.13em; }
+  #egg1-msg, #egg2-msg { font-size: clamp(16px, 5.5vw, 28px); white-space: normal;
+                         text-align: center; padding: 0 24px; width: 100%; left: 0;
+                         transform: translateY(-50%); }
+  #music-btn    { bottom: 42px; right: 16px; }
+  #music-tip    { right: 16px; max-width: 190px; font-size: 11px; }
+  #page-footer  { font-size: 9px; bottom: 10px; right: 14px; }
 }
