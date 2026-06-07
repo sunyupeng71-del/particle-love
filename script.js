@@ -23,8 +23,8 @@ let soundEnabled     = false;
 let musicToggleCount = 0;
 let mouseSoundAccum  = 0;      // 鼠标移动距离累计
 let mouseSoundLastX  = -1, mouseSoundLastY = -1;
-let lastParticleSndT = 0;      // 粒子音效节流时间戳
-let lastChimeMoveT   = 0;      // 鼠标移动风铃节流时间戳
+let lastParticleSndT = 0;      // 粒子互动音节流时间戳
+let lastChimeMoveT   = 0;      // 鼠标微风音节流时间戳
 
 // 烟花文件跳过前置静音的秒数（根据实际文件调整）
 const FIREWORK_SKIP  = 1.19;
@@ -906,36 +906,38 @@ function playSoundForce(snd, vol) {
   clip.play().catch(() => {});
 }
 
-// ---- 一、鼠标移动风铃音 -------------------------------------
-// 距离阈值 50px，时间节流 200ms；直接 reset 同一对象无叠加
+// ---- 声音一：鼠标微风（只在鼠标移动时触发）-----------------
+// 触发源：mousemove 事件（鼠标静止时事件不会触发，从根本上保证无漏音）
+// 每累计移动 100px 触发一次，同时加 180ms 时间节流避免快速移动叠声
+// 直接 reset 同一 Audio 对象，不 clone，无叠加爆音风险
 function onMouseMoved(x, y) {
   if (mouseSoundLastX < 0) { mouseSoundLastX = x; mouseSoundLastY = y; return; }
   const dx = x - mouseSoundLastX, dy = y - mouseSoundLastY;
-  mouseSoundAccum += Math.sqrt(dx*dx + dy*dy);
+  mouseSoundAccum += Math.sqrt(dx * dx + dy * dy);
   mouseSoundLastX = x; mouseSoundLastY = y;
-  if (!soundEnabled || mouseSoundAccum < 50) return;
+  if (!soundEnabled || mouseSoundAccum < 100) return;
   mouseSoundAccum = 0;
   const now = performance.now();
-  if (now - lastChimeMoveT < 200) return;
+  if (now - lastChimeMoveT < 180) return;   // 最多每 180ms 一次，防快速移动叠声
   lastChimeMoveT = now;
   sndChimeMove.currentTime = 0;
-  sndChimeMove.volume = 0.15;
+  sndChimeMove.volume = 0.08;               // 固定 0.08，非常轻柔
   sndChimeMove.play().catch(() => {});
 }
 
-// ---- 二、粒子推开音 -----------------------------------------
-// 关键修复：窗口从 300ms 缩短到 80ms
-// 鼠标必须在 80ms 内有过移动才触发，一停下立即静音
-// 避免"刚停住时粒子仍振动导致漏音"的感知问题
+// ---- 声音二：粒子被轻触（只在鼠标"正在推粒子"时触发）------
+// 触发源：Particle.update() 内部，粒子进入鼠标斥力区（距离 < 150px）时调用
+// 双重保险：① 鼠标必须在 50ms 内有移动（真正推动中，非静止振动）
+//           ② 节流 500ms，5% 概率，避免密集触发
 function maybePlayStarGlint() {
   if (!soundEnabled) return;
   const now = performance.now();
-  if (now - lastMouseMoveTime > 80) return;   // 80ms 内无移动则跳过
-  if (now - lastParticleSndT < 400) return;   // 节流 400ms
-  if (Math.random() > 0.03) return;           // 3% 概率
+  if (now - lastMouseMoveTime > 50) return;  // 50ms 内无移动 = 鼠标静止，跳过
+  if (now - lastParticleSndT < 500) return;  // 节流 500ms
+  if (Math.random() > 0.05) return;          // 5% 概率
   lastParticleSndT = now;
   sndChimePush.currentTime = 0;
-  sndChimePush.volume = 0.1;
+  sndChimePush.volume = 0.12;               // 固定 0.12，稍清晰
   sndChimePush.play().catch(() => {});
 }
 
