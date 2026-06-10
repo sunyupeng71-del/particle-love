@@ -5,18 +5,78 @@
 // ---- DOM refs -----------------------------------------------
 const canvas         = document.getElementById('canvas');
 const ctx            = canvas.getContext('2d');
-const textGroup      = document.getElementById('text-group');
 const introWrap      = document.getElementById('intro-wrap');
-const introLine1     = document.getElementById('intro-line1');
+const introLine1     = document.getElementById('intro-line1');   // 七句话复用
 const introLine2     = document.getElementById('intro-line2');
-const egg1Msg        = document.getElementById('egg1-msg');
-const egg2Msg        = document.getElementById('egg2-msg');
-const egg3Msg        = document.getElementById('egg3-msg');
-const fireworkNameEl = document.getElementById('firework-name');
 const musicBtn       = document.getElementById('music-btn');
-const musicTip       = document.getElementById('music-tip');
-const subTextEl      = document.getElementById('sub-text');
-const bgMusicEl      = document.getElementById('bgMusic');
+
+// ============================================================
+// 〇、记忆地基（localStorage）+ 调试快进
+// ============================================================
+// 这是整个「一百夜」机制的地基：访问计数、上次到访、已说过的话、
+// 黎明进度。所有里程碑（第2/10/50/100夜、生日、久别）都从这里读。
+const LS = { visits:'fx_visits', last:'fx_lastVisit', first:'fx_firstVisit', said:'fx_said' };
+
+// —— 调试快进：?night=N 指定夜数；?hour=H 指定时辰；?bday=1 强制生日；?fresh=1 清空记忆 ——
+const Q = new URLSearchParams(location.search);
+const DBG = {
+  night: Q.has('night') ? Math.max(1, parseInt(Q.get('night'), 10) || 1) : null,
+  hour:  Q.has('hour')  ? Math.max(0, Math.min(23, parseInt(Q.get('hour'), 10) || 0)) : null,
+  bday:  Q.get('bday')  === '1',
+  fresh: Q.get('fresh') === '1',
+  away:  Q.get('away')  === '1',   // 强制「久别重逢」
+  sunrise: Q.get('sunrise') === '1', // 强制「第100夜日出」预览
+};
+function lsGet(k, d){ try { const v = localStorage.getItem(k); return v === null ? d : v; } catch(e){ return d; } }
+function lsSet(k, v){ try { localStorage.setItem(k, v); } catch(e){} }
+if (DBG.fresh) { try { Object.values(LS).forEach(k => localStorage.removeItem(k)); } catch(e){} }
+
+// —— 访问计数：真实到访才 +1 并写入；调试指定夜数时不写入，方便反复预览 ——
+const _rawVisits = parseInt(lsGet(LS.visits, '0'), 10) || 0;
+const visitCount = DBG.night !== null ? DBG.night : _rawVisits + 1;
+if (DBG.night === null) lsSet(LS.visits, String(visitCount));
+
+// —— 上次到访 / 久别（>30天）——
+const _lastTs  = parseInt(lsGet(LS.last, '0'), 10) || 0;
+const nowTs    = Date.now();
+const daysAway = _lastTs ? (nowTs - _lastTs) / 86400000 : 0;
+const longAway = DBG.away || daysAway > 30;
+if (DBG.night === null) lsSet(LS.last, String(nowTs));
+if (!lsGet(LS.first, '')) lsSet(LS.first, String(nowTs));
+
+// —— 黎明进度：一百夜 = 一场日出，每次只涨 1%（第8步驱动底部天光）——
+const dawnProgress = Math.min(visitCount / 100, 1);
+
+// —— 时辰与生日（8月17日）——
+const _now = new Date();
+const hour = DBG.hour !== null ? DBG.hour : _now.getHours();
+const isBirthday = DBG.bday || (_now.getMonth() === 7 && _now.getDate() === 17);
+
+// —— 七句话：说过即焚（调试夜数时视为从未说过，便于预览）——
+let _saidSet = new Set();
+try { _saidSet = new Set(JSON.parse(lsGet(LS.said, '[]'))); } catch(e){}
+function hasSaid(key){ return DBG.night === null && _saidSet.has(key); }
+function markSaid(key){
+  if (DBG.night !== null) return;
+  _saidSet.add(key); lsSet(LS.said, JSON.stringify([..._saidSet]));
+}
+
+// —— 访问节奏：每次回来开场更快一点（门开得更快），下限 0.45 ——
+const tScale = Math.max(0.45, 1 - (visitCount - 1) * 0.06);
+
+console.info(`[宇宙] 第 ${visitCount} 夜 · 时辰 ${hour}:00 · 黎明进度 ${(dawnProgress*100).toFixed(0)}%`,
+             `\n调试：?night=N ?hour=H ?bday=1 ?fresh=1`);
+
+// ============================================================
+// 音频钩子（占位）—— 真正的 Web Audio / Tone.js 合成在第5步实现
+// ============================================================
+let audioUnlocked = false;
+function unlockAudio(){
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  audioOnFirstGesture();   // Tone 已就绪则启动；否则加载完成后自动启动
+}
+// 真正的音频实现见文件底部「音频系统」（Tone.js + 原生 Web Audio）。
 
 // ---- 音频状态（HTML5 Audio 本地文件版）-----------------------
 let soundEnabled     = false;
@@ -40,33 +100,9 @@ const FIREWORK_SKIP  = 1.19;
 // 解决：为高频音效准备多个副本，每次触发轮流用下一个副本，
 // 相邻触发落在不同对象上、互不打断。池子大小有限（4 个），
 // 最多同时 4 层 × 0.08 ≈ 0.32，绝不会叠加爆音。
-function makeVoicePool(src, size) {
-  const pool = [];
-  for (let i = 0; i < size; i++) {
-    const a = new Audio(src);
-    a.preload = 'auto';
-    pool.push(a);
-  }
-  let idx = 0;
-  return function (vol) {
-    const a = pool[idx];
-    idx = (idx + 1) % size;                 // 轮转到下一个声部
-    a.volume = Math.max(0, Math.min(1, vol));
-    a.currentTime = 0;
-    a.play().catch(() => {});
-  };
-}
-
-// 两类风铃各用一个独立的轮转池（同源文件 chime.mp3）
-const playChimeMove = makeVoicePool('音乐/chime.mp3', 4); // 声音一：鼠标微风
-const playChimePush = makeVoicePool('音乐/chime.mp3', 3); // 声音二：粒子互动
-
-// 低频一次性音效：单对象即可（不存在自我打断问题）
-const sndFirework  = new Audio('音乐/firework.wav');
-const sndMagic     = new Audio('音乐/magic.wav');
-const sndSwitchOn  = new Audio('音乐/switch-on.mp3');
-const sndSwitchOff = new Audio('音乐/switch-off.mp3');
-if (bgMusicEl) { bgMusicEl.loop = true; bgMusicEl.volume = 0.2; }
+// 旧的 mp3 / HTML5 Audio 系统已移除（禁外部音频文件、禁循环 BGM）。
+// 新的声音全部由 Tone.js（钢琴/和弦）+ 原生 Web Audio（drone/叮）合成，
+// 见文件底部「音频系统」。
 
 // ---- 数量常量 -----------------------------------------------
 const TOTAL      = 180;
@@ -90,10 +126,107 @@ const LINE_DIST     = 100;
 const EXPLODE_SPD   = 38;
 const EXPLODE_MS    = 1500;
 
-// ---- 状态枚举 -----------------------------------------------
-const St = { WELCOME:0, GATHERING:1, TYPING:2, COMPLETE:3 };
-let introState = St.WELCOME;
+// ---- 状态枚举（五阶段体验节奏）-----------------------------
+// DARK 黑暗 → FIRST_STAR 第一颗星 → SPREAD 星野渗透 → NAME 名字 → COMPLETE 完全交互
+const St = { DARK:0, FIRST_STAR:1, SPREAD:2, NAME:3, COMPLETE:4 };
+let introState = St.DARK;
 let curSpring  = 0;
+
+// ---- 开场运行时 ---------------------------------------------
+let spreadStartT      = 0;            // SPREAD 起始时间戳
+let firstStarIdx      = 0;            // 「第一颗星」的粒子索引
+let firstStarPos      = { x:0, y:0 };
+let bgRevealAlpha     = 0;            // 背景星空/光斑揭幕透明度 0→1
+let grainAlpha        = 1;            // 黑暗颗粒透明度 1→0
+let dustParticles     = [];           // 名字「碎成星尘」用的临时粒子
+let grainBuf          = null;         // 黑暗颗粒缓冲
+
+// ---- 生命感：呼吸 / 困倦 / 清醒度（第2步）-------------------
+let lastActivityT  = performance.now();   // 最近一次互动（鼠标/触摸/点击）
+let breathPhase    = 0;                    // 呼吸相位
+let breathPeriod   = 4000;                 // 当前呼吸周期 ms，随困倦放缓
+let wakefulness    = longAway ? 0.80 : 1;  // 清醒度 0.82~1；久别重逢从更暗处缓缓苏醒
+let lifeFactor     = 1;                    // = 呼吸 × 清醒度，乘到全场亮度
+let isAsleep       = false;                // 是否已睡着（>10min 静止）
+let breathFrozen   = false;                // 切走标签页：屏住呼吸
+let lastFrameT     = performance.now();    // 上一帧时间戳（算 dt）
+
+// ---- 一次一星：星数随访问增长（封顶 120）-------------------
+let EXTRA_STARS    = Math.min(Math.max(visitCount - 1, 0), 120);
+
+// ---- Bloom 柔光离屏画布 -------------------------------------
+let bloomCanvas = null, bloomCtx = null, bloomOK = false;
+const BLOOM_SCALE = 0.5;   // 半分辨率，省性能
+
+// ---- 流星顶层画布（每帧彻底清空，不参与主画布的拖尾，因而不会残留） ----
+let fxCanvas = null, fxCtx = null, meteorLayerDirty = false;
+
+// ---- 时辰主题（凌晨/清晨/昼/黄昏/夜）-----------------------
+function getTimeTheme(h) {
+  if (h >= 0  && h < 5)  return { trail:'rgba(5,5,13,0.20)',   starMul:1.15, edge:null,                                  watch:true  };
+  if (h >= 5  && h < 9)  return { trail:'rgba(10,9,20,0.20)',  starMul:0.90, edge:{r:120,g:90,b:160,a:0.05,pos:'top'},    watch:false };
+  if (h >= 9  && h < 17) return { trail:'rgba(14,15,28,0.22)', starMul:0.62, edge:null,                                  watch:false };
+  if (h >= 17 && h < 20) return { trail:'rgba(12,8,16,0.20)',  starMul:0.85, edge:{r:200,g:120,b:70,a:0.06,pos:'bottom'}, watch:false };
+  return                        { trail:'rgba(7,7,16,0.20)',   starMul:1.00, edge:null,                                  watch:(h>=22) };
+}
+const TT = getTimeTheme(hour);
+
+// ---- 第3步：记忆与停留反馈 ----------------------------------
+let shyStar   = null;   // 认生的星（当前这一颗）
+let shyStop   = 50;     // 停在距光标多远（随访问减小，约第30夜触到）
+let shySpeed  = 1;      // 靠近速度倍率（久别更快）
+let warmStar  = null;   // 暖星彩蛋（全场唯一偏暖的一颗）
+let warmHoverStart = 0; // 光标停在暖星上的起始时刻
+let warmDone  = (DBG.night === null) && (lsGet('fx_warm','') === '1');
+
+// 痕迹热图：降采样网格，跨会话留存 —— 她走过的地方会淡淡留下痕迹
+const TG_W = 32, TG_H = 18;
+let traceGrid = new Float32Array(TG_W * TG_H);
+(function loadTrace(){
+  try {
+    const saved = JSON.parse(lsGet('fx_trace', '[]'));
+    if (Array.isArray(saved) && saved.length === TG_W*TG_H)
+      for (let i = 0; i < saved.length; i++) traceGrid[i] = (saved[i] || 0) / 255;
+  } catch(e){}
+})();
+let traceSaveT = performance.now();
+function saveTrace(){
+  if (DBG.night !== null) return;          // 调试夜数不写入，避免污染真实记忆
+  const out = new Array(TG_W * TG_H);
+  for (let i = 0; i < traceGrid.length; i++) out[i] = Math.round(Math.min(1, traceGrid[i]) * 255);
+  lsSet('fx_trace', JSON.stringify(out));
+}
+function recordTrace(){
+  if (mouse.x < 0 || mouse.x > W || mouse.y < 0 || mouse.y > H) return;
+  const cx = Math.floor(mouse.x / W * TG_W);
+  const cy = Math.floor(mouse.y / H * TG_H);
+  const i  = cy * TG_W + cx;
+  if (i >= 0 && i < traceGrid.length) traceGrid[i] = Math.min(1, traceGrid[i] + 0.004);
+}
+
+// ---- 第4步：点击=提问 + 连星成座 ----------------------------
+let press = null;             // 指针按下状态 {sx,sy,star,t}
+let ripples = [];             // 涟漪回应
+const STAR_GRAB   = 38;       // 抓取星星的半径
+const CONNECT_MIN = 26;       // 超过此位移视为「拖拽连线」而非「轻点」
+
+// 连星成座：她画下的线永久极淡留存（跨会话，存分数坐标）
+let constellations = [];
+(function loadConstel(){
+  try {
+    const saved = JSON.parse(lsGet('fx_constel','[]'));
+    if (Array.isArray(saved)) constellations = saved.filter(c => c && 'ax' in c);
+  } catch(e){}
+})();
+function saveConstel(){
+  if (DBG.night !== null) return;
+  lsSet('fx_constel', JSON.stringify(constellations.slice(-120)));   // 封顶 120 条
+}
+// ---- 里程碑高潮：第100夜日出 / 生日弯月（playBloomChord 等真正实现见底部音频系统）----
+let dawnLevel = 0;            // 日出序列时的天亮程度 0→1→0
+let starFade  = 0;           // 日出时星星隐去 0→1
+let sunriseActive = false, sunrisePhase = null, sunriseT0 = 0, sunriseFreeze = false;
+let moonActive = false, moonT0 = 0, moonCanvas = null;
 
 // ---- 爆炸阶段 -----------------------------------------------
 let explodePhase = 'idle'; // 'idle' | 'contract' | 'blast'
@@ -139,9 +272,6 @@ let lastTouchTime  = 0;
 // ---- 流星调度 -----------------------------------------------
 let meteorTimeout  = null;
 
-// ---- 烟花名字 -----------------------------------------------
-let fwNameActive   = false;
-
 // ============================================================
 // 一、高清 Canvas
 // ============================================================
@@ -159,34 +289,51 @@ function setupCanvas() {
 // ============================================================
 // 二、背景星空（Float32Array，避免循环内创建对象）
 // ============================================================
+// 三层景深：远（多、暗、小、慢）/ 中 / 近（少、亮、大、视差大）
+// 每颗星 7 个 float：baseAngle, dist, radius, brightness, twinkleSpd, twinklePhase, depth
+const BG_DEPTHS = [0.15, 0.45, 0.85];   // 远 / 中 / 近
 function initBgStars() {
-  bgStarBuf = new Float32Array(N_BG_STARS * 6);
+  bgStarBuf = new Float32Array(N_BG_STARS * 7);
   const maxDist = Math.hypot(W, H) * 0.62;
   for (let i = 0; i < N_BG_STARS; i++) {
-    const b = i * 6;
+    const b = i * 7;
+    // 前 55% 远、30% 中、15% 近
+    const depth = (i < N_BG_STARS*0.55) ? BG_DEPTHS[0]
+                : (i < N_BG_STARS*0.85) ? BG_DEPTHS[1]
+                :                          BG_DEPTHS[2];
     bgStarBuf[b+0] = Math.random() * Math.PI * 2;          // baseAngle
     bgStarBuf[b+1] = Math.random() * maxDist;              // dist
-    bgStarBuf[b+2] = 0.3 + Math.random() * 0.5;           // radius
-    bgStarBuf[b+3] = 0.25 + Math.random() * 0.65;         // brightness
-    bgStarBuf[b+4] = (0.4 + Math.random() * 2.2) * 0.001; // twinkleSpd rad/ms
+    bgStarBuf[b+2] = 0.25 + Math.random() * 0.45;          // radius 基数
+    bgStarBuf[b+3] = 0.22 + Math.random() * 0.55;          // brightness 基数
+    bgStarBuf[b+4] = (0.4 + Math.random() * 2.0) * 0.001;  // twinkleSpd rad/ms
     bgStarBuf[b+5] = Math.random() * Math.PI * 2;          // twinklePhase
+    bgStarBuf[b+6] = depth;
   }
 }
 
-function drawBgStars(elapsed) {
-  const ROT = (Math.PI * 2) / 120000; // 120s 一圈
+function drawBgStars(elapsed, mul) {
+  mul = (mul === undefined) ? 1 : mul;
+  const ROT = (Math.PI * 2) / 300000;     // 慢得多（300s），几乎是一片静止的深空
   const cx = W / 2, cy = H / 2;
+  // 鼠标视差：仅光标在屏内时启用，近层位移大、远层几乎不动
+  let mx = 0, my = 0;
+  if (mouse.x >= 0 && mouse.x <= W && mouse.y >= 0 && mouse.y <= H) {
+    mx = (mouse.x - cx); my = (mouse.y - cy);
+  }
   for (let i = 0; i < N_BG_STARS; i++) {
-    const b   = i * 6;
-    const ang = bgStarBuf[b+0] + elapsed * ROT;
-    const d   = bgStarBuf[b+1];
-    const r   = bgStarBuf[b+2];
-    const br  = bgStarBuf[b+3] * (0.55 + 0.45 * Math.sin(elapsed * bgStarBuf[b+4] + bgStarBuf[b+5]));
-    const x   = cx + Math.cos(ang) * d;
-    const y   = cy + Math.sin(ang) * d;
+    const b     = i * 7;
+    const depth = bgStarBuf[b+6];
+    const ang   = bgStarBuf[b+0] + elapsed * ROT * (0.4 + depth);
+    const d     = bgStarBuf[b+1];
+    const r     = bgStarBuf[b+2] * (0.6 + depth * 1.0);
+    const br    = bgStarBuf[b+3] * (0.45 + depth * 0.75)
+                  * (0.55 + 0.45 * Math.sin(elapsed * bgStarBuf[b+4] + bgStarBuf[b+5])) * mul;
+    if (br < 0.01) continue;
+    const x = cx + Math.cos(ang) * d - mx * depth * 0.035;
+    const y = cy + Math.sin(ang) * d - my * depth * 0.035;
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(200,215,255,${br.toFixed(2)})`;
+    ctx.fillStyle = `rgba(208,220,255,${br.toFixed(2)})`;
     ctx.fill();
   }
 }
@@ -207,25 +354,34 @@ function spawnMeteor() {
   meteorTimeout = setTimeout(spawnMeteor, 15000 + Math.random() * 10000);
 }
 
+// 流星画在顶层画布上，每帧整层清空——拖尾只来自当帧的渐变，绝不跨帧累积/残留。
 function drawMeteors() {
+  if (!fxCtx) return;
+  // 无流星且上一帧也已清空：直接跳过（零开销）
+  if (meteors.length === 0 && !meteorLayerDirty) return;
+
+  fxCtx.clearRect(0, 0, W, H);   // 关键：每帧绘制前彻底清空流星层
+
   const now = performance.now();
   meteors = meteors.filter(m => {
     const t = (now - m.born) / m.life;
-    if (t >= 1) return false;
+    if (t >= 1) return false;    // 寿命结束：移出数组 → 下一帧不再绘制 → 立即消失
     const alpha = t < 0.4 ? t / 0.4 : (1 - t) / 0.6;
     const hx = m.x + Math.cos(m.angle) * m.speed * t * 55;
     const hy = m.y + Math.sin(m.angle) * m.speed * t * 55;
     const tx = hx - Math.cos(m.angle) * m.len;
     const ty = hy - Math.sin(m.angle) * m.len;
-    const g  = ctx.createLinearGradient(tx, ty, hx, hy);
-    g.addColorStop(0,   'rgba(140,195,255,0)');
+    const g  = fxCtx.createLinearGradient(tx, ty, hx, hy);
+    g.addColorStop(0,   'rgba(140,195,255,0)');         // 尾：完全透明
     g.addColorStop(0.6, `rgba(180,220,255,${(alpha * 0.35).toFixed(2)})`);
-    g.addColorStop(1,   `rgba(255,255,255,${alpha.toFixed(2)})`);
-    ctx.beginPath();
-    ctx.moveTo(tx, ty); ctx.lineTo(hx, hy);
-    ctx.strokeStyle = g; ctx.lineWidth = 1.4; ctx.stroke();
+    g.addColorStop(1,   `rgba(255,255,255,${alpha.toFixed(2)})`);  // 头
+    fxCtx.beginPath();
+    fxCtx.moveTo(tx, ty); fxCtx.lineTo(hx, hy);
+    fxCtx.strokeStyle = g; fxCtx.lineWidth = 1.4; fxCtx.stroke();
     return true;
   });
+
+  meteorLayerDirty = meteors.length > 0;   // 记录本帧是否有内容，便于下帧决定是否需要清空
 }
 
 // ============================================================
@@ -245,11 +401,19 @@ function buildHeartPoints(n, cx, cy, scale) {
 // ============================================================
 // 五、颜色
 // ============================================================
+// 统一冷调：星白 → 蓝白（b≥g≥r，绝不偏黄）。
+// 唯一的「暖星」留给第3步的彩蛋 —— 让它成为这片冷星野里唯一一点暖。
 function pickColor(type) {
-  const t = Math.random();
-  if (type === 'bright') return { r:255, g:(222+t*33)|0, b:(238+t*17)|0 };
-  if (type === 'main')   return { r:(255-t*18)|0, g:(107+t*95)|0, b:(157+t*82)|0 };
-  return { r:(158-t*20)|0, g:(138+t*62)|0, b:(200+t*55)|0 };
+  if (type === 'bright') {
+    // 亮星：近白的冷蓝白
+    return { r:(226+Math.random()*22)|0, g:(236+Math.random()*15)|0, b:(250+Math.random()*5)|0 };
+  }
+  if (type === 'main') {
+    // 主星：冷白
+    return { r:(206+Math.random()*28)|0, g:(220+Math.random()*22)|0, b:(244+Math.random()*11)|0 };
+  }
+  // 远处微尘：暗蓝白
+  return { r:(162+Math.random()*30)|0, g:(186+Math.random()*26)|0, b:(222+Math.random()*28)|0 };
 }
 
 // ============================================================
@@ -276,6 +440,14 @@ class Particle {
     this.jitter      = (Math.random() - 0.5) * 0.65;
     this.tx1 = ix; this.ty1 = iy;
     this.tx2 = ix; this.ty2 = iy;
+
+    // 星野渐现（SPREAD 阶段「渗透」用）
+    this.vis        = 0;   // 当前可见度 0→1
+    this.visTarget  = 0;   // 目标可见度
+    this.appearDelay = 0;  // 错峰点亮延迟（ms）
+    this.homeFx = 0; this.homeFy = 0;  // home 的分数坐标（resize 等比重算）
+    this.trembleT = 0;     // 暖星「颤一下」的起始时刻
+    this.htx = ix; this.hty = iy;   // 烟花「绽放」时的爱心轮廓目标
   }
 
   radius(elapsed) {
@@ -292,53 +464,78 @@ class Particle {
     this.tx2 = this.tx1; this.ty2 = this.ty1;
     this.tx1 = this.x;   this.ty1 = this.y;
 
-    // 布朗运动：在目标位置 ±3px 随机漂移，让爱心像在呼吸
-    if (introState === St.COMPLETE && !egg2On) {
+    // 渐现：进入 SPREAD 后，按各自错峰延迟点亮（星野「墨滴入水」式渗透）
+    if (introState >= St.SPREAD && this.visTarget < 1) {
+      if (performance.now() - spreadStartT >= this.appearDelay) this.visTarget = 1;
+    }
+    this.vis += (this.visTarget - this.vis) * 0.04;
+
+    // 布朗微漂：仅完全交互态，让星野像在轻轻呼吸
+    if (introState === St.COMPLETE) {
       this.brownX = this.brownX * 0.96 + (Math.random() - 0.5) * 0.18;
       this.brownY = this.brownY * 0.96 + (Math.random() - 0.5) * 0.18;
     }
     const btx = this.tx + Math.max(-3, Math.min(3, this.brownX));
     const bty = this.ty + Math.max(-3, Math.min(3, this.brownY));
 
-    // 爆炸收缩阶段：强弹簧拉向点击中心
-    if (explodePhase === 'contract') {
-      this.vx += (explodeCX - this.x) * CONTRACT_SPR;
-      this.vy += (explodeCY - this.y) * CONTRACT_SPR;
-    } else {
-      this.vx += (btx - this.x) * curSpring;
+    // 弹簧回归 / 烟花各阶段
+    if (explodePhase === 'gather') {
+      this.vx += (this.htx - this.x) * 0.045;   // 缓慢聚拢到爱心轮廓
+      this.vy += (this.hty - this.y) * 0.045;
+    } else if (explodePhase === 'hold') {
+      this.vx += (this.htx - this.x) * 0.10;     // 停顿：定在爱心上
+      this.vy += (this.hty - this.y) * 0.10;
+    } else if (explodePhase === 'snow') {
+      this.vy += 0.035;                           // 轻轻散开后如雪缓降
+      this.vx += (btx - this.x) * curSpring * 0.35;
+      this.vy += (bty - this.y) * curSpring * 0.35;
+    } else if (!(this === shyStar && introState === St.COMPLETE)) {
+      this.vx += (btx - this.x) * curSpring;      // 正常 home 弹簧
       this.vy += (bty - this.y) * curSpring;
     }
 
-    // 聚合入场：给粒子随机扰动，模拟萤火虫飞行
-    if (introState === St.GATHERING) {
-      this.vx += (Math.random() - 0.5) * 0.28;
-      this.vy += (Math.random() - 0.5) * 0.28;
+    // 星野渗透：轻微随机扰动，像萤火虫缓缓散开
+    if (introState === St.SPREAD) {
+      this.vx += (Math.random() - 0.5) * 0.18;
+      this.vy += (Math.random() - 0.5) * 0.18;
     }
 
-    // 鼠标双区域交互（仅 COMPLETE 且非爆炸）
+    // 鼠标交互（仅 COMPLETE 且非爆炸；入场期间不响应）
     if (introState === St.COMPLETE && explodePhase === 'idle') {
       const mdx = mouse.x - this.x;
       const mdy = mouse.y - this.y;
-      const md2 = mdx*mdx + mdy*mdy;
-      const md  = Math.sqrt(md2);
-      if (md < MOUSE_INNER && md > 0) {
-        // 内圈：轻微吸引
+      const md  = Math.sqrt(mdx*mdx + mdy*mdy);
+
+      if (this === shyStar) {
+        // 认生的星：朝光标靠近，停在 shyStop 处（随访问越来越近）
+        const hx = this.heartX - mouse.x, hy = this.heartY - mouse.y;
+        const hd = Math.hypot(hx, hy) || 1;
+        const tgx = mouse.x + (hx / hd) * shyStop;
+        const tgy = mouse.y + (hy / hd) * shyStop;
+        this.vx += (tgx - this.x) * 0.03 * shySpeed;
+        this.vy += (tgy - this.y) * 0.03 * shySpeed;
+      } else if (md < MOUSE_INNER && md > 0) {
         const f = (1 - md / MOUSE_INNER) * 3.5;
         this.vx += (mdx / md) * f;
         this.vy += (mdy / md) * f;
       } else if (md < MOUSE_OUTER && md > 0) {
-        // 外圈：斥力 + 随机偏转
         const f = (1 - (md - MOUSE_INNER) / (MOUSE_OUTER - MOUSE_INNER)) * MOUSE_FORCE;
         const a = Math.atan2(-mdy, -mdx) + this.jitter;
         this.vx += Math.cos(a) * f;
         this.vy += Math.sin(a) * f;
-        maybePlayStarGlint();  // 星光闪烁音（节流+3%概率）
+        maybePlayStarGlint();
       }
+    }
 
-      // 鼠标静止 2s 后极缓慢靠近光标
-      if (performance.now() - lastMouseMoveTime > 2000 && md > 10 && md < 350) {
-        this.vx += (mdx / md) * 0.04;
-        this.vy += (mdy / md) * 0.04;
+    // 暖星彩蛋：被「发现」后颤一下（700ms 衰减抖动），不重复
+    if (this === warmStar && this.trembleT) {
+      const dt = performance.now() - this.trembleT;
+      if (dt < 700) {
+        const amp = (1 - dt / 700) * 1.1;
+        this.vx += Math.sin(dt * 0.07) * amp;
+        this.vy += Math.cos(dt * 0.05) * amp * 0.5;
+      } else {
+        this.trembleT = 0;
       }
     }
 
@@ -359,17 +556,31 @@ class Particle {
   }
 
   draw(elapsed) {
-    const r = this.radius(elapsed);
-    // 色相缓慢漂移：粉→浅紫→粉，30s 一周期
+    let va = this.vis * lifeFactor * (1 - starFade);   // 全场呼吸 × 清醒度；日出时星渐隐
+    // 涟漪：波前扫过这颗星时，它暗一下
+    if (ripples.length) {
+      const now = performance.now();
+      for (let k = 0; k < ripples.length; k++) {
+        const rp = ripples[k];
+        const front = (now - rp.born) * 0.55;
+        const dd = Math.abs(Math.hypot(this.x - rp.cx, this.y - rp.cy) - front);
+        if (dd < 70) va *= (0.4 + 0.6 * (dd / 70));
+      }
+    }
+    if (va < 0.01) return;                 // 尚未点亮 / 睡得太深：不画
+    const r  = this.radius(elapsed);
+    // 极淡的冷暖微漂（30s 一周期），克制，不再粉紫
     const drift  = Math.sin(elapsed / 30000 * Math.PI * 2 + this.pulsePhase);
     const { r:cr, g:cg, b:cb } = this.color;
-    const gr = cr, gg = (cg + drift * 22) | 0, gb = Math.min(255, (cb - drift * 15) | 0);
+    const gr = cr, gg = (cg + drift * 5) | 0, gb = Math.min(255, (cb + drift * 7) | 0);
+
+    const shyB = (this === shyStar) ? 1.7 : 1;   // 认生的星：靠近时微微变亮
 
     if (this.type !== 'ambient') {
-      const glowR = r * 2.5;
+      const glowR = r * 2.5 * shyB;
       const glr   = this.type === 'bright' ? Math.min(gr+20,255) : gr;
       const glg   = this.type === 'bright' ? Math.min(gg+10,255) : gg;
-      const ga    = this.type === 'bright' ? 0.75 : 0.44;
+      const ga    = Math.min(1, (this.type === 'bright' ? 0.75 : 0.44) * va * shyB);
       const grd   = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, glowR);
       grd.addColorStop(0, `rgba(${glr},${glg},${gb},${ga})`);
       grd.addColorStop(1, `rgba(${gr},${gg},${gb},0)`);
@@ -377,7 +588,7 @@ class Particle {
       ctx.fillStyle = grd; ctx.fill();
     }
     ctx.beginPath(); ctx.arc(this.x, this.y, r, 0, Math.PI*2);
-    ctx.fillStyle = `rgba(${gr},${gg},${gb},${this.type==='ambient'?0.68:1.0})`;
+    ctx.fillStyle = `rgba(${gr},${gg},${gb},${((this.type==='ambient'?0.68:1.0)*va).toFixed(3)})`;
     ctx.fill();
   }
 }
@@ -415,7 +626,7 @@ class OrbitParticle {
 // ============================================================
 // 八、BokehBlob（背景漂移光斑）
 // ============================================================
-const BLOB_C = [{r:255,g:107,b:157},{r:180,g:130,b:220},{r:130,g:180,b:220}];
+const BLOB_C = [{r:110,g:140,b:205},{r:140,g:135,b:200},{r:108,g:168,b:212}]; // 冷调星云光斑
 class BokehBlob {
   constructor(i) { this.color=BLOB_C[i%3]; this._init(true); }
   _init(rnd) {
@@ -435,10 +646,11 @@ class BokehBlob {
     this.angle+=this.dAngle; this.x+=Math.cos(this.angle)*this.speed; this.y+=Math.sin(this.angle)*this.speed;
     if(this.x<-300||this.x>W+300||this.y<-300||this.y>H+300) this._init(false);
   }
-  draw() {
+  draw(mul) {
     const {r,g,b}=this.color;
+    const a = this.alpha * ((mul === undefined) ? 1 : mul);
     const grd=ctx.createRadialGradient(this.x,this.y,0,this.x,this.y,this.r);
-    grd.addColorStop(0,`rgba(${r},${g},${b},${this.alpha})`);
+    grd.addColorStop(0,`rgba(${r},${g},${b},${a})`);
     grd.addColorStop(1,`rgba(${r},${g},${b},0)`);
     ctx.beginPath(); ctx.arc(this.x,this.y,this.r,0,Math.PI*2); ctx.fillStyle=grd; ctx.fill();
   }
@@ -498,234 +710,366 @@ function shuffle(arr) {
 // ============================================================
 // 十一、init / resize
 // ============================================================
+// 星野 home 的分数坐标（满屏分布，留边）
+function buildFieldFractions(n) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    out.push({ fx: 0.05 + Math.random() * 0.90, fy: 0.07 + Math.random() * 0.86 });
+  }
+  return out;
+}
+
+// 黑暗颗粒缓冲（每颗 3 个 float：fx, fy, phase）
+function initGrain() {
+  grainBuf = new Float32Array(60 * 3);
+  for (let i = 0; i < 60; i++) {
+    const b = i * 3;
+    grainBuf[b]   = Math.random();
+    grainBuf[b+1] = Math.random();
+    grainBuf[b+2] = Math.random() * Math.PI * 2;
+  }
+}
+
 function init() {
   setupCanvas();
+  setupBloom();
+  setupMeteorLayer();
+  // 烟花爱心的中心/尺度（不再常驻显示，仅第4步烟花瞬间成形时用）
   heartScale = Math.min((W*0.60)/32, (H*0.50)/29);
   heartCX    = W/2;
-  heartCY    = H*0.42 - 2.5*heartScale;
+  heartCY    = H*0.46;
 
-  const hPts     = buildHeartPoints(N_HEART, heartCX, heartCY, heartScale);
-  const shuffled = shuffle(hPts.slice());
+  const cx = W/2, cy = H/2;
 
   if (particles.length === 0) {
-    for (let i=0;i<N_BRIGHT;i++) {
-      const [ix,iy]=edgePos();
-      particles.push(new Particle('bright',shuffled[i].x,shuffled[i].y,ix,iy));
-    }
-    for (let i=N_BRIGHT;i<N_HEART;i++) {
-      const [ix,iy]=edgePos();
-      particles.push(new Particle('main',shuffled[i].x,shuffled[i].y,ix,iy));
-    }
-    for (let i=0;i<N_AMBIENT;i++) {
-      const base=hPts[Math.floor(Math.random()*N_HEART)];
-      const ang=Math.random()*Math.PI*2, dist=heartScale*(2+Math.random()*4);
-      const [ix,iy]=edgePos();
-      particles.push(new Particle('ambient',base.x+Math.cos(ang)*dist,base.y+Math.sin(ang)*dist,ix,iy));
-    }
-    for (let i=0;i<N_ORBIT;   i++) orbitParticles.push(new OrbitParticle(i));
+    const homes = buildFieldFractions(N_HEART + N_AMBIENT + EXTRA_STARS);
+    let hi = 0;
+    const mk = (type) => {
+      const f  = homes[hi++];
+      const hx = f.fx * W, hy = f.fy * H;
+      // 初始位置：聚拢在中心附近 —— SPREAD 阶段由此向外「渗透扩散」
+      const ix = cx + (hx - cx) * 0.12 + (Math.random()-0.5)*20;
+      const iy = cy + (hy - cy) * 0.12 + (Math.random()-0.5)*20;
+      const p  = new Particle(type, hx, hy, ix, iy);
+      p.homeFx = f.fx; p.homeFy = f.fy;
+      p.appearDelay = Math.random() * 6000;   // 错峰点亮（渗透感）
+      return p;
+    };
+    for (let i=0;i<N_BRIGHT;i++)        particles.push(mk('bright'));
+    for (let i=N_BRIGHT;i<N_HEART;i++)  particles.push(mk('main'));
+    for (let i=0;i<N_AMBIENT;i++)       particles.push(mk('ambient'));
+    for (let i=0;i<EXTRA_STARS;i++)     particles.push(mk('ambient')); // 一次一星
+
+    firstStarIdx = 0;  // 第一颗星：取一颗 bright
+
+    // 暖星彩蛋：固定一颗 bright 星，色温比全场都暖一点点（全场唯一的暖）
+    warmStar = particles[3] || particles[0];
+    warmStar.color = { r:255, g:240, b:214 };
+
+    for (let i=0;i<N_ORBIT;   i++) orbitParticles.push(new OrbitParticle(i));  // 暂留，开场不启用
     for (let i=0;i<3;         i++) bokehBlobs.push(new BokehBlob(i));
     for (let i=0;i<N_FOLLOWER;i++) starFollowers.push(new StarFollower());
     initBgStars();
+    initGrain();
   } else {
-    let hi=0;
-    const sh2=shuffle(buildHeartPoints(N_HEART,heartCX,heartCY,heartScale).slice());
+    // resize：按分数等比重算 home
     particles.forEach(p => {
-      if (p.type==='ambient') {
-        const base=hPts[Math.floor(Math.random()*N_HEART)];
-        const ang=Math.random()*Math.PI*2, dist=heartScale*(2+Math.random()*4);
-        p.heartX=p.tx=base.x+Math.cos(ang)*dist; p.heartY=p.ty=base.y+Math.sin(ang)*dist;
-      } else { p.heartX=p.tx=sh2[hi].x; p.heartY=p.ty=sh2[hi].y; hi++; }
-      p.isEscaping=false;
+      p.heartX = p.tx = p.homeFx * W;
+      p.heartY = p.ty = p.homeFy * H;
     });
-    escapedSet.clear();
-    initBgStars(); // 重新计算最大距离
+    initBgStars();
   }
-  textGroup.style.top = (heartCY+17*heartScale+62)+'px';
 }
 
 // ============================================================
-// 十二、入场动画（新时间线）
+// 十二、五阶段开场（第一夜：黑 → 一颗星 → 星野渗透 → 名字 → 完全交互）
 // ============================================================
+// 时间线随访问次数压缩（tScale）：每次回来，门开得更快一点。
 function startIntro() {
-  // 0-2s: 星空背景出现（canvas 自然渲染）
-  // 2s: 第一行文字淡入
-  setTimeout(()=>{ introLine1.style.opacity='1'; }, 2000);
-  // 3.5s: 第一行淡出
-  setTimeout(()=>{ introLine1.style.opacity='0'; }, 3500);
-  // 4s: 第二行淡入
-  setTimeout(()=>{ introLine2.style.opacity='1'; }, 4000);
-  // 5.5s: 第二行淡出
-  setTimeout(()=>{ introLine2.style.opacity='0'; }, 5500);
-  // 6s: 聚合开始
-  setTimeout(()=>{ introState=St.GATHERING; curSpring=GATHER_SPRING; }, 6000);
-  // 9s: 聚合完成，文字出现
+  introState = St.DARK;
+  curSpring  = 0;
+  bgRevealAlpha = 0; grainAlpha = 1;
+  introWrap.style.display = 'none';      // 名字不再常驻，只在 NAME 阶段说一次
+
+  const T_DARK = 1800 * tScale;          // 阶段0：黑暗保持
+  const T_WAIT = 4500 * tScale;          // 阶段1：第一颗星等待「触碰」的上限
+
+  // 阶段0 → 阶段1：黑暗中亮起第一颗星
   setTimeout(()=>{
-    introState=St.TYPING; curSpring=SPRING_K;
-    introWrap.style.display='none';
-    textGroup.style.opacity='1';
-    textGroup.style.animationPlayState='running';
-    typeSubText();
-  }, 9000);
-  // 10.5s: 完全交互
-  setTimeout(()=>{
-    introState=St.COMPLETE;
-    schedulePhaseCheck();
-    scheduleEscape();
-    scheduleEgg3();
-    meteorTimeout=setTimeout(spawnMeteor, 5000+Math.random()*10000);
-  }, 10500);
+    if (introState === St.DARK){ introState = St.FIRST_STAR; positionFirstStar(); }
+  }, T_DARK);
+
+  // 阶段1 → 阶段2：她一触碰就推进（见 onFirstGesture）；此处是兜底——始终不动也会继续
+  setTimeout(()=>{ advanceToSpread(); }, T_DARK + T_WAIT);
 }
 
-// ============================================================
-// 十三、逐字淡入
-// ============================================================
-function typeSubText() {
-  const text='晓语，遇见你是我最大的幸福';
-  subTextEl.innerHTML='';
-  [...text].forEach((ch,i)=>{
-    const s=document.createElement('span'); s.textContent=ch; subTextEl.appendChild(s);
-    setTimeout(()=>{ s.style.opacity='1'; }, i*80+200);
-  });
+// 第一颗星：偏左下，独自亮起
+function positionFirstStar() {
+  const fs = particles[firstStarIdx];
+  firstStarPos = { x: W*0.42, y: H*0.60 };
+  fs.x = fs.tx = firstStarPos.x;
+  fs.y = fs.ty = firstStarPos.y;
+  fs.visTarget = 1;
 }
 
-// ============================================================
-// 十四、诗意阶段调度
-// ============================================================
-function schedulePhaseCheck() {
-  setTimeout(()=>{ phase=1; }, 30000);
-  setTimeout(()=>{ phase=2; }, 120000);
+// 阶段2：星野渗透 —— 粒子由中心向外扩散、错峰点亮
+function advanceToSpread() {
+  if (introState !== St.FIRST_STAR) return;
+  introState = St.SPREAD;
+  curSpring  = GATHER_SPRING;
+  spreadStartT = performance.now();
+  const fs = particles[firstStarIdx];    // 第一颗星归队，融入星野
+  fs.tx = fs.heartX; fs.ty = fs.heartY;
+  setTimeout(()=>{ enterNameStage(); }, 9000 * tScale);
 }
 
-// ============================================================
-// 十五、粒子逃逸（phase 2）
-// ============================================================
-function scheduleEscape() {
-  function run() {
-    if (phase===2 && introState===St.COMPLETE) {
-      const n=1+Math.floor(Math.random()*3);
-      const pool=particles.filter(p=>!p.isEscaping&&p.type!=='ambient');
-      for (let i=0;i<Math.min(n,pool.length);i++) {
-        const idx=Math.floor(Math.random()*pool.length);
-        const p=pool.splice(idx,1)[0];
-        p.isEscaping=true; escapedSet.add(p);
-        const ang=Math.random()*Math.PI*2;
-        p.tx=heartCX+Math.cos(ang)*W*0.47; p.ty=heartCY+Math.sin(ang)*H*0.47;
-        setTimeout(()=>{
-          p.tx=p.heartX; p.ty=p.heartY;
-          setTimeout(()=>{ p.isEscaping=false; escapedSet.delete(p); },2500);
-        }, 3000+Math.random()*2000);
-      }
-    }
-    escapeTimeout=setTimeout(run, 8000+Math.random()*10000);
+// 阶段3：名字 —— 说当晚那一句（说完即焚），随后碎成星尘
+function enterNameStage() {
+  introState = St.NAME;
+  curSpring  = SPRING_K;
+  const s = pickOpeningSentence();
+  if (s) {
+    showSentence(s.text);
+    markSaid(s.key);
+    setTimeout(()=>{ dissolveSentence(enterComplete); }, 5000 * tScale + 1400);
+  } else {
+    setTimeout(enterComplete, 1500);     // 沉默之夜：什么都不说
   }
-  escapeTimeout=setTimeout(run, 8000+Math.random()*10000);
+}
+
+// 阶段4：完全交互
+function enterComplete() {
+  introState = St.COMPLETE;
+  meteorTimeout = setTimeout(spawnMeteor, 8000 + Math.random()*12000);
+
+  // 第100夜日出（前几分钟一切如常，安静下来后才发生）
+  if (DBG.sunrise || (visitCount >= 100 && !hasSaid('s_hundred'))) {
+    setTimeout(() => { if (introState === St.COMPLETE) startSunrise(); }, DBG.sunrise ? 3500 : 18000);
+  }
+  // 生日弯月（8月17日）
+  if (isBirthday) {
+    setTimeout(() => { if (introState === St.COMPLETE) startBirthdayMoon(); }, 6000);
+  }
 }
 
 // ============================================================
-// 十六、彩蛋一：三连击（金色）
+// 十三、七句话（说过即焚）—— 开场阶段触发的几句
 // ============================================================
-function recordClick() {
-  if (introState!==St.COMPLETE) return;
-  const now=Date.now();
-  clickTimes=clickTimes.filter(t=>now-t<1500); clickTimes.push(now);
-  if (clickTimes.length>=3&&!egg1On&&!egg2On) { triggerEgg1(); clickTimes=[]; }
-}
-function triggerEgg1() {
-  egg1On=true;
-  playMusicBoxMelody();  // C5→E5→G5→C6 八音盒旋律
-  particles.forEach(p=>{ p.savedColor={...p.color}; p.color={r:255,g:(188+Math.random()*38)|0,b:(48+Math.random()*32)|0}; });
-  egg1Msg.style.opacity='1';
-  clearTimeout(egg1Timer);
-  egg1Timer=setTimeout(()=>{
-    egg1Msg.style.opacity='0';
-    setTimeout(()=>{ particles.forEach(p=>{p.color=p.savedColor;}); egg1On=false; },1200);
-  }, 4000);
-}
-
-// ============================================================
-// 十七、彩蛋二：Ctrl+L / 三指（星空模式）
-// ============================================================
-function triggerEgg2() {
-  if (egg2On||introState!==St.COMPLETE) return;
-  egg2On=true;
-  // 粒子散布全屏
-  particles.forEach(p=>{
-    p.savedTX2=p.tx; p.savedTY2=p.ty;
-    p.tx=Math.random()*W; p.ty=Math.random()*H;
-  });
-  egg2Msg.style.opacity='1';
-  clearTimeout(egg2Timer);
-  egg2Timer=setTimeout(()=>{
-    egg2Msg.style.opacity='0';
-    particles.forEach(p=>{ p.tx=p.savedTX2||p.heartX; p.ty=p.savedTY2||p.heartY; });
-    setTimeout(()=>{ egg2On=false; },1500);
-  }, 5000);
+// 第50/100夜、生日的句子需后续步骤的视觉支撑（月亮/日出/和弦），暂以 defer 标记延后。
+const OPENING_SENTENCES = [
+  { key:'s_name',     text:'晓语',                                           when:c=>c.visit===1 },
+  { key:'s_ten',      text:'今晚的天上，比你第一次来的时候，多了十颗星。',     when:c=>c.visit>=10 },
+  { key:'s_fifty',    text:'这里的每一颗星，都是一句没说出口的话。',           when:c=>c.visit>=50 },
+  { key:'s_latenight',text:'这么晚。没关系，星星也都醒着。',                  when:c=>c.hour>=0 && c.hour<5 },
+  { key:'s_back',     text:'你回来了。',                                      when:c=>c.visit>=2 },
+  { key:'s_birthday1',text:'这个宇宙没有月亮。除了今天。', defer:true,         when:c=>c.isBirthday },
+  { key:'s_hundred',  text:'这是一百个夜晚没说出口的话，一起开口的声音。', defer:true, when:c=>c.visit>=100 },
+];
+function pickOpeningSentence() {
+  const ctx = { visit: visitCount, hour, isBirthday, longAway };
+  for (const s of OPENING_SENTENCES) {
+    if (s.defer || hasSaid(s.key)) continue;
+    if (s.when(ctx)) return s;
+  }
+  return null;
 }
 
-// ============================================================
-// 十八、彩蛋三：5分钟自动
-// ============================================================
-function scheduleEgg3() {
-  setTimeout(()=>{
-    if (egg3Shown) return;
-    egg3Shown=true;
-    egg3Msg.style.opacity='1';
-    setTimeout(()=>{ egg3Msg.style.opacity='0'; },3000);
-  }, 300000); // 5 分钟
+// 文字浮现：偏左下，极细、不发光
+function showSentence(text) {
+  introWrap.style.display = 'block';
+  introLine2.style.display = 'none';
+  const el = introLine1;
+  el.textContent         = text;
+  el.style.position      = 'fixed';
+  el.style.left          = '11%';
+  el.style.top           = '60%';
+  el.style.transform     = 'none';
+  el.style.margin        = '0';
+  el.style.maxWidth      = '78vw';
+  el.style.fontSize      = 'clamp(15px, 2vw, 22px)';
+  el.style.fontWeight    = '300';
+  el.style.letterSpacing = '0.22em';
+  el.style.color         = 'rgba(238,240,248,0.92)';
+  el.style.textShadow    = 'none';
+  el.style.transition    = 'opacity 2.2s ease';
+  el.style.opacity       = '0';
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{ el.style.opacity = '1'; }));
 }
 
-// ============================================================
-// 十九、爆炸：先收缩 0.3s，再猛然炸开
-// ============================================================
-function explode(cx, cy) {
-  if (introState!==St.COMPLETE||explodePhase!=='idle') return;
-  explodePhase='contract'; explodeCX=cx; explodeCY=cy;
+// 碎成星尘：文字淡出 + 在原位生成飘散的星尘
+function dissolveSentence(cb) {
+  const el = introLine1;
+  const rect = el.getBoundingClientRect();
+  spawnStardust(rect);
+  el.style.transition = 'opacity 1.6s ease';
+  el.style.opacity = '0';
+  setTimeout(()=>{ if (cb) cb(); }, 1700);
+}
 
-  // 0.3s 后炸开
-  clearTimeout(contractTimer);
-  contractTimer=setTimeout(()=>{
-    explodePhase='blast';
-    particles.forEach(p=>{
-      const ang=Math.random()*Math.PI*2;
-      const spd=EXPLODE_SPD*(0.4+Math.random()*0.8);
-      p.vx=Math.cos(ang)*spd; p.vy=Math.sin(ang)*spd;
-      // 30% 粒子短暂变色（金色或亮白）
-      if (Math.random()<0.30) {
-        p.savedColor={...p.color};
-        p.color=Math.random()>0.5?{r:255,g:220,b:60}:{r:255,g:255,b:255};
-        setTimeout(()=>{ if(p.savedColor) p.color=p.savedColor; },1800+Math.random()*1000);
-      }
+function spawnStardust(rect) {
+  const n = 30;
+  for (let i = 0; i < n; i++) {
+    dustParticles.push({
+      x: rect.left + Math.random()*Math.max(rect.width, 30),
+      y: rect.top  + Math.random()*Math.max(rect.height, 16),
+      vx: (Math.random()-0.5)*0.5,
+      vy: -0.15 - Math.random()*0.5,
+      r:  0.6 + Math.random()*1.3,
+      born: performance.now(),
+      life: 2200 + Math.random()*1600,
     });
-    playFireworkBloom();  // 烟花温暖绽放音
-    addShockwaves(cx,cy);
-    showFireworkName(cx,cy);
-    clearTimeout(explodeTimer);
-    explodeTimer=setTimeout(()=>{ explodePhase='idle'; },EXPLODE_MS);
-  }, 300);
+  }
 }
 
-function addShockwaves(cx,cy) {
-  [{color:{r:255,g:255,b:255},maxR:220,speed:7.0},
-   {color:{r:255,g:107,b:157},maxR:310,speed:4.5},
-   {color:{r:180,g:130,b:220},maxR:400,speed:2.8}]
-  .forEach(c=>shockwaves.push({x:cx,y:cy,r:0,...c}));
+function drawDust() {
+  if (dustParticles.length === 0) return;
+  const now = performance.now();
+  dustParticles = dustParticles.filter(d => {
+    const t = (now - d.born) / d.life;
+    if (t >= 1) return false;
+    d.x += d.vx; d.y += d.vy; d.vy += 0.002;
+    const a = (1 - t) * 0.8;
+    ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(235,238,250,${a.toFixed(3)})`; ctx.fill();
+    return true;
+  });
+}
+
+// 黑暗中的细颗粒（眼睛适应暗房间的颗粒感），SPREAD 后淡出
+function drawGrain(elapsed) {
+  if (grainAlpha < 0.01 || !grainBuf) return;
+  for (let i = 0; i < 60; i++) {
+    const b  = i * 3;
+    const x  = (grainBuf[b]   + Math.sin(elapsed*0.00004 + grainBuf[b+2])*0.02) * W;
+    const y  = (grainBuf[b+1] + Math.cos(elapsed*0.00003 + grainBuf[b+2])*0.02) * H;
+    const tw = 0.5 + 0.5 * Math.sin(elapsed*0.001 + grainBuf[b+2]);
+    ctx.beginPath(); ctx.arc(x, y, 0.7, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(150,160,190,${(0.05*grainAlpha*tw).toFixed(3)})`; ctx.fill();
+  }
+}
+
+// 首次交互：解锁声音 + 推进开场（触碰才有第一个声音）
+function onFirstGesture() {
+  unlockAudio();
+  if (introState === St.FIRST_STAR) advanceToSpread();
+}
+
+// 旧的「诗意阶段 / 粒子逃逸 / 三连击金色 / Ctrl+L 星空 / 5分钟提示」彩蛋已全部移除
+// （与 Fable 版冲突）。新的"彩蛋"是：暖星 + 七句话 + 第100夜日出 + 生日弯月。
+
+// ============================================================
+// 十九、点击 = 向天空提问（克制的随机回应；约 1/10 沉默）
+// ============================================================
+function askSky(cx, cy) {
+  if (introState !== St.COMPLETE || explodePhase !== 'idle') return;
+  const roll = Math.random();
+  if      (roll < 0.10) { return; }              // 沉默：天空只是看着她
+  else if (roll < 0.42) heartBlossom(cx, cy);    // 温柔绽放：爱心0.5秒闪现→雪落
+  else if (roll < 0.74) rippleAt(cx, cy);         // 涟漪：星空轻颤
+  else                  meteorAnswer();           // 远年流星
+}
+
+// 温柔绽放：缓慢聚成爱心轮廓 → 停顿0.5s → 轻轻散开 → 如雪缓降
+// （六步结构，力度 −70%，冲击波极淡，不浮现名字）
+function heartBlossom(cx, cy) {
+  explodePhase = 'gather';
+  const scale = Math.min(W, H) / 75;
+  const hw = 16 * scale, hh = 17 * scale;
+  cx = Math.max(hw + 24, Math.min(W - hw - 24, cx));   // 夹住，整颗爱心不出界
+  cy = Math.max(hh + 24, Math.min(H - hh - 24, cy));
+  const pts = shuffle(buildHeartPoints(particles.length, cx, cy, scale));
+  particles.forEach((p, i) => { p.htx = pts[i].x; p.hty = pts[i].y; });
+
+  clearTimeout(contractTimer); clearTimeout(explodeTimer);
+  contractTimer = setTimeout(() => {            // 聚拢 0.7s 后
+    explodePhase = 'hold';
+    addShockwaves(cx, cy);                       // 极淡冲击波
+    playBloomChord();                            // 第5步：合成音
+    setTimeout(() => {                           // 停顿 0.5s 后轻轻散开
+      explodePhase = 'snow';
+      particles.forEach(p => {
+        const ang = Math.random() * Math.PI * 2;
+        const spd = 11 * (0.4 + Math.random() * 0.7);   // 原 38，−70%
+        p.vx = Math.cos(ang) * spd * 0.6;
+        p.vy = Math.sin(ang) * spd * 0.6 - 1.2;         // 先微微上扬，再如雪落下
+      });
+      explodeTimer = setTimeout(() => { explodePhase = 'idle'; }, 2800);
+    }, 500);
+  }, 700);
+}
+
+// 涟漪：从点击处荡开，所有星依次暗一下再亮（粒子变暗在 Particle.draw 里处理）
+function rippleAt(cx, cy) { ripples.push({ cx, cy, born: performance.now() }); }
+function drawRipples() {
+  if (!ripples.length) return;
+  const now = performance.now();
+  const maxFront = Math.hypot(W, H);
+  ripples = ripples.filter(rp => {
+    const front = (now - rp.born) * 0.55;
+    if (front > maxFront) return false;
+    const a = Math.max(0, 0.06 * (1 - front / maxFront)) * lifeFactor * bgRevealAlpha;
+    if (a > 0.002) {
+      ctx.beginPath(); ctx.arc(rp.cx, rp.cy, front, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(200,215,255,${a.toFixed(3)})`; ctx.lineWidth = 1; ctx.stroke();
+    }
+    return true;
+  });
+}
+
+// 远年流星：一道很远、很慢的流星（光出发于几年前，到得比出发晚很多）
+function meteorAnswer() {
+  meteors.push({
+    x:     W * 0.1 + Math.random() * W * 0.7,
+    y:     Math.random() * H * 0.2,
+    angle: Math.PI / 5 + (Math.random() - 0.5) * 0.3,
+    speed: 5 + Math.random() * 4,
+    len:   120 + Math.random() * 160,
+    born:  performance.now(),
+    life:  900 + Math.random() * 500,
+  });
+}
+
+// 极淡冲击波：绽放时几乎看不见的一圈涟漪
+function addShockwaves(cx, cy) {
+  shockwaves.push({ x:cx, y:cy, r:0, color:{r:210,g:222,b:255}, maxR:Math.min(W,H)*0.45, speed:3.0 });
 }
 
 // ============================================================
-// 二十、烟花名字动画
+// 连星成座：在星与星之间拖出细线，永久极淡留存
 // ============================================================
-function showFireworkName(cx,cy) {
-  if (fwNameActive) return;
-  fwNameActive=true;
-  fireworkNameEl.style.left=cx+'px'; fireworkNameEl.style.top=cy+'px';
-  fireworkNameEl.style.opacity='1'; fireworkNameEl.style.transform='translate(-50%,-50%) scale(0.55)';
-  const t0=performance.now();
-  (function step(now){
-    const p=Math.min((now-t0)/950,1);
-    fireworkNameEl.style.transform=`translate(-50%,-50%) scale(${(0.55+p*1.05).toFixed(3)})`;
-    fireworkNameEl.style.opacity=(1-p).toFixed(3);
-    if(p<1) requestAnimationFrame(step); else fwNameActive=false;
-  })(performance.now());
+function nearestStar(x, y, maxDist) {
+  let best = null, bd = maxDist * maxDist;
+  for (const p of particles) {
+    if (p.type === 'ambient' || p.vis < 0.3) continue;
+    const dx = p.x - x, dy = p.y - y, d2 = dx*dx + dy*dy;
+    if (d2 < bd) { bd = d2; best = p; }
+  }
+  return best;
+}
+function addConstellation(p1, p2) {
+  constellations.push({ ax:p1.homeFx, ay:p1.homeFy, bx:p2.homeFx, by:p2.homeFy });
+  saveConstel();
+  playBloomChord();
+}
+function drawConstellations(m) {
+  if (!constellations.length || m < 0.02) return;
+  ctx.lineWidth = 0.6;
+  for (const c of constellations) {
+    ctx.beginPath();
+    ctx.moveTo(c.ax * W, c.ay * H);
+    ctx.lineTo(c.bx * W, c.by * H);
+    ctx.strokeStyle = `rgba(190,205,240,${(0.10 * m).toFixed(3)})`;
+    ctx.stroke();
+  }
+}
+// 拖拽时的预览连线
+function drawDragPreview() {
+  if (!press || !press.star || mouse.x < 0) return;
+  if (Math.hypot(mouse.x - press.sx, mouse.y - press.sy) < CONNECT_MIN) return;
+  ctx.beginPath();
+  ctx.moveTo(press.star.x, press.star.y);
+  ctx.lineTo(mouse.x, mouse.y);
+  ctx.strokeStyle = 'rgba(210,222,255,0.35)'; ctx.lineWidth = 0.8; ctx.stroke();
 }
 
 // ============================================================
@@ -786,9 +1130,13 @@ function drawMouseTrail() {
   for (let i=1;i<mouseHistory.length;i++) {
     const p=mouseHistory[i];
     const age=(now-p.t)/800;
-    const a=(1-age)*0.22;
-    ctx.beginPath(); ctx.arc(p.x,p.y,2.5*(1-age),0,Math.PI*2);
-    ctx.fillStyle=`rgba(255,175,215,${a.toFixed(3)})`; ctx.fill();
+    if (age >= 1) continue;                 // 防止半径变负（否则 arc() 抛错、整个动画循环崩溃）
+    const rr = 2.5*(1-age);
+    if (rr <= 0) continue;
+    const a=(1-age)*0.18;
+    ctx.beginPath(); ctx.arc(p.x,p.y,rr,0,Math.PI*2);
+    ctx.fillStyle=`rgba(200,215,255,${a.toFixed(3)})`;  // 冷调微光（原为粉色）
+    ctx.fill();
   }
 }
 
@@ -796,19 +1144,255 @@ function drawMouseTrail() {
 // 二十三、背景渲染
 // ============================================================
 function drawBackground(elapsed) {
-  // 深空半透明遮罩（产生拖尾效果）
-  ctx.fillStyle='rgba(8,8,18,0.20)';
+  // 深空拖尾遮罩，颜色随时辰；DARK 阶段更接近纯黑
+  ctx.fillStyle = TT.trail;
   ctx.fillRect(0,0,W,H);
-  // 爱心后方暖粉光晕
-  const hg=ctx.createRadialGradient(heartCX,heartCY,0,heartCX,heartCY,W*0.40);
-  hg.addColorStop(0,'rgba(255,107,157,0.08)');
-  hg.addColorStop(0.5,'rgba(255,107,157,0.03)');
-  hg.addColorStop(1,'rgba(255,107,157,0)');
-  ctx.fillStyle=hg; ctx.fillRect(0,0,W,H);
-  // 背景星空
-  drawBgStars(elapsed);
-  // 漂移光斑
-  bokehBlobs.forEach(b=>{ b.update(); b.draw(); });
+
+  if (bgRevealAlpha > 0.01) {
+    const m = bgRevealAlpha * lifeFactor;
+    // 时辰边缘色：清晨顶部微紫 / 黄昏底部余烬橙
+    if (TT.edge) {
+      const e = TT.edge;
+      const g = (e.pos === 'top')
+        ? ctx.createLinearGradient(0, 0, 0, H * 0.55)
+        : ctx.createLinearGradient(0, H, 0, H * 0.45);
+      g.addColorStop(0, `rgba(${e.r},${e.g},${e.b},${(e.a*m).toFixed(3)})`);
+      g.addColorStop(1, `rgba(${e.r},${e.g},${e.b},0)`);
+      ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+    }
+    const ms = m * (1 - starFade);                   // 日出时整片天（含痕迹/星座/守夜星）一起隐去
+    drawBgStars(elapsed, ms * TT.starMul);
+    drawTraceHeatmap(ms);                            // 她走过的痕迹（跨会话）
+    drawConstellations(ms);                          // 她画下的星座（跨会话）
+    bokehBlobs.forEach(b=>{ b.update(); b.draw(ms); });
+    if (TT.watch) drawNightWatchStar(elapsed, ms);  // 22点后正上方的守夜星
+    drawDawnLine();                                  // 底部天光（黎明进度 / 日出）
+  }
+}
+
+// 守夜星：深夜正上方，比谁都亮，整夜不动
+function drawNightWatchStar(elapsed, m) {
+  const x = W/2, y = H*0.12;
+  const pulse = 0.85 + 0.15 * Math.sin(elapsed * 0.0006);
+  const a = m * pulse;
+  const grd = ctx.createRadialGradient(x, y, 0, x, y, 11);
+  grd.addColorStop(0, `rgba(235,242,255,${(0.85*a).toFixed(3)})`);
+  grd.addColorStop(1, 'rgba(235,242,255,0)');
+  ctx.beginPath(); ctx.arc(x, y, 11, 0, Math.PI*2); ctx.fillStyle = grd; ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, 1.6, 0, Math.PI*2);
+  ctx.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`; ctx.fill();
+}
+
+// ============================================================
+// 里程碑高潮：第100夜日出 / 底部天光 / 生日弯月
+// ============================================================
+// 第100夜：星止、屏息3秒 → 终曲和弦 + 那句话 → 90秒天亮、星渐隐 → 复位，底部永留一线天光
+function startSunrise() {
+  if (sunriseActive) return;
+  sunriseActive = true; sunrisePhase = 'freeze'; sunriseFreeze = true;
+  stopAmbientPiano();
+  if (droneGain && actx) droneGain.gain.setTargetAtTime(0, actx.currentTime, 1.2);   // 低鸣停
+  setTimeout(() => {
+    playFinalChord();                                                                 // 终曲和弦
+    showSentence('这是一百个夜晚没说出口的话，一起开口的声音。');
+    markSaid('s_hundred');
+    sunriseT0 = performance.now(); sunrisePhase = 'dawning';
+  }, 3000);                                                                           // 屏息 3 秒
+}
+function updateSunrise() {
+  if (!sunriseActive || sunrisePhase !== 'dawning') return;
+  const t = (performance.now() - sunriseT0) / 90000;                                  // 90 秒
+  if (t >= 1) { endSunrise(); return; }
+  dawnLevel = t < 0.5 ? (t / 0.5) : (1 - (t - 0.5) / 0.5);                             // 0→1→0
+  starFade  = dawnLevel;
+  if (t > 0.52 && introLine1.style.opacity !== '0') introLine1.style.opacity = '0';   // 天光最盛时无字
+}
+function endSunrise() {
+  dawnLevel = 0; starFade = 0; sunriseActive = false; sunriseFreeze = false; sunrisePhase = null;
+  if (droneGain && actx && !audioMuted) droneGain.gain.setTargetAtTime(0.05, actx.currentTime, 4);
+  startAmbientPiano();
+  if (DBG.night === null) lsSet('fx_sunrise', '1');
+  // 从此底部永远留一线天光（由 dawnProgress=1 提供）
+}
+
+// 底部天光：每次访问 +1%（极淡、肉眼几乎无法察觉），第100夜后成为永久的一线
+function drawDawnLine() {
+  const baseA = Math.min(dawnProgress, 1) * 0.07;
+  const a = Math.max(baseA, dawnLevel * 0.85);
+  if (a < 0.004) return;
+  const h = H * (0.10 + dawnLevel * 0.7);
+  const g = ctx.createLinearGradient(0, H, 0, H - h);
+  g.addColorStop(0,    `rgba(255,200,150,${a.toFixed(3)})`);
+  g.addColorStop(0.45, `rgba(255,182,150,${(a*0.4).toFixed(3)})`);
+  g.addColorStop(1,    'rgba(255,182,150,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, H - h, W, h);
+}
+
+// 生日弯月：极细极淡，用 3 分钟横过夜空，升落淡入淡出；首个生日附一句话
+function startBirthdayMoon() {
+  if (moonActive) return;
+  moonActive = true; moonT0 = performance.now();
+  if (!hasSaid('s_birthday1')) {
+    showSentence('这个宇宙没有月亮。除了今天。');
+    markSaid('s_birthday1');
+    setTimeout(() => dissolveSentence(), 6500);
+  }
+}
+function drawMoon() {
+  if (!moonActive) return;
+  const t = (performance.now() - moonT0) / 180000;          // 3 分钟
+  if (t >= 1) { moonActive = false; return; }
+  const x = W * (0.12 + 0.76 * t);
+  const y = H * (1.02 - 0.82 * Math.sin(Math.PI * t));      // 抛物线升落
+  const R = Math.min(W, H) * 0.042;
+  const a = Math.sin(Math.PI * t);                          // 升起→落下，淡入淡出
+  if (!moonCanvas) moonCanvas = document.createElement('canvas');
+  const size = Math.max(2, Math.ceil(R * 3));
+  moonCanvas.width = size; moonCanvas.height = size;
+  const mx = moonCanvas.getContext('2d');
+  const cx = size/2, cy = size/2;
+  mx.fillStyle = 'rgba(245,243,236,1)';
+  mx.beginPath(); mx.arc(cx, cy, R, 0, Math.PI*2); mx.fill();
+  mx.globalCompositeOperation = 'destination-out';          // 挖出弯月（在离屏，不破坏主画布）
+  mx.beginPath(); mx.arc(cx + R*0.55, cy - R*0.15, R*0.97, 0, Math.PI*2); mx.fill();
+  ctx.save(); ctx.globalAlpha = 0.5 * a;
+  ctx.drawImage(moonCanvas, x - cx, y - cy);
+  ctx.restore();
+}
+
+// ============================================================
+// 生命感：呼吸 / 困倦 / 睡着（每帧更新 lifeFactor）
+// ============================================================
+function updateLife() {
+  const now = performance.now();
+  const dt  = Math.min(64, now - lastFrameT);   // 限制 dt，切回标签页时不跳变
+  lastFrameT = now;
+
+  const idle = now - lastActivityT;
+  let wTarget, pTarget;
+  if      (idle < 120000) { wTarget = 1.00; pTarget = 4000; }  // 清醒
+  else if (idle < 600000) { wTarget = 0.90; pTarget = 6500; }  // 困倦（2~10min）
+  else                    { wTarget = 0.82; pTarget = 9000; }  // 睡着（>10min）
+
+  const sleeping = idle >= 600000;
+  if (sleeping && !isAsleep) { isAsleep = true;  setSleepState(true); }
+  if (!sleeping && isAsleep) { isAsleep = false; setSleepState(false); }
+
+  // 缓动：约 3 秒苏醒 / 入睡
+  wakefulness  += (wTarget - wakefulness)  * 0.02;
+  breathPeriod += (pTarget - breathPeriod) * 0.02;
+
+  // 呼吸相位推进（切走标签页时屏息）
+  if (!breathFrozen && !sunriseFreeze) breathPhase += (dt / breathPeriod) * Math.PI * 2;  // 日出屏息时也冻结
+
+  lifeFactor = (0.92 + 0.08 * Math.sin(breathPhase)) * wakefulness;
+}
+
+// 认生的星：静止 >5s 选最近一颗，缓缓靠近；一动就放手（它自行归位）
+function updateShyStar(){
+  const idle = performance.now() - lastMouseMoveTime;
+  if (idle < 5000 || mouse.x < 0 || mouse.x > W) { shyStar = null; return; }
+  if (!shyStar) {
+    let best = null, bd = 300 * 300;
+    for (const p of particles) {
+      if (p === warmStar || p.type === 'ambient' || p.vis < 0.4) continue;
+      const dx = p.x - mouse.x, dy = p.y - mouse.y, d2 = dx*dx + dy*dy;
+      if (d2 < bd) { bd = d2; best = p; }
+    }
+    shyStar  = best;
+    shyStop  = Math.max(0, 60 - (visitCount - 1) * 2);   // 越来越近，约第30夜触到
+    shySpeed = longAway ? 1.6 : 1.0;                      // 久别：靠近更快
+  }
+}
+
+// 暖星彩蛋：光标在它上面停够久（3s）→ 颤一下，不重复
+function updateSecretStar(){
+  if (!warmStar || warmDone) return;
+  const near = (mouse.x >= 0) &&
+    ((mouse.x - warmStar.x)**2 + (mouse.y - warmStar.y)**2 < 16 * 16);
+  const now = performance.now();
+  if (near) {
+    if (!warmHoverStart) warmHoverStart = now;
+    else if (now - warmHoverStart > 3000) {
+      warmStar.trembleT = now;
+      warmDone = true;
+      if (DBG.night === null) lsSet('fx_warm', '1');
+    }
+  } else {
+    warmHoverStart = 0;
+  }
+}
+
+// 痕迹热图：她走过的地方淡淡发亮（跨会话留存）；同时极慢衰减——淡，但很久才消失
+function drawTraceHeatmap(m) {
+  if (m < 0.02) return;
+  const cw = W / TG_W, ch = H / TG_H, rr = cw * 0.85;
+  for (let cy = 0; cy < TG_H; cy++) {
+    for (let cx = 0; cx < TG_W; cx++) {
+      const idx = cy * TG_W + cx;
+      const v = traceGrid[idx];
+      if (v > 0.0005) traceGrid[idx] = v * 0.99996;
+      if (v < 0.08) continue;
+      const x = (cx + 0.5) * cw, y = (cy + 0.5) * ch;
+      const a = Math.min(0.05, v * 0.05) * m;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, rr);
+      g.addColorStop(0, `rgba(150,175,225,${a.toFixed(3)})`);
+      g.addColorStop(1, 'rgba(150,175,225,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI*2); ctx.fill();
+    }
+  }
+}
+
+// ============================================================
+// Bloom 柔光：把较亮的粒子核画到半分辨率离屏，模糊后叠加回主画布
+// ============================================================
+function setupBloom() {
+  const bw = Math.max(2, Math.round(W * BLOOM_SCALE));
+  const bh = Math.max(2, Math.round(H * BLOOM_SCALE));
+  if (!bloomCanvas) bloomCanvas = document.createElement('canvas');
+  bloomCanvas.width = bw; bloomCanvas.height = bh;
+  bloomCtx = bloomCanvas.getContext('2d');
+  bloomOK  = ('filter' in ctx);    // 检测 ctx.filter 支持（不支持则跳过 bloom）
+}
+
+// 流星顶层画布：叠在主画布之上、文字层之下；每帧整层清空，所以流星不会留下残影
+function setupMeteorLayer() {
+  const dpr = window.devicePixelRatio || 1;
+  if (!fxCanvas) {
+    fxCanvas = document.createElement('canvas');
+    fxCanvas.id = 'fx-meteor';
+    fxCanvas.style.cssText =
+      'position:fixed;inset:0;width:100%;height:100%;display:block;pointer-events:none;z-index:1;';
+    document.body.appendChild(fxCanvas);
+  }
+  fxCanvas.width  = Math.round(W * dpr);
+  fxCanvas.height = Math.round(H * dpr);
+  fxCtx = fxCanvas.getContext('2d');
+  fxCtx.setTransform(dpr, 0, 0, dpr, 0, 0);   // 与主画布一致，按 CSS 像素绘制
+  meteorLayerDirty = false;
+}
+
+function drawBloom() {
+  if (!bloomOK || bgRevealAlpha < 0.02 || starFade > 0.98) return;
+  const s = BLOOM_SCALE;
+  bloomCtx.clearRect(0, 0, bloomCanvas.width, bloomCanvas.height);
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    if (p.type === 'ambient' || p.vis < 0.2) continue;
+    const r = Math.max(0.8, p.baseR) * s * 1.5;
+    const { r:cr, g:cg, b:cb } = p.color;
+    bloomCtx.beginPath();
+    bloomCtx.arc(p.x * s, p.y * s, r, 0, Math.PI*2);
+    bloomCtx.fillStyle = `rgba(${cr},${cg},${cb},${(0.9*p.vis).toFixed(2)})`;
+    bloomCtx.fill();
+  }
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.filter = 'blur(6px)';
+  ctx.globalAlpha = 0.5 * lifeFactor * bgRevealAlpha * (1 - starFade);
+  ctx.drawImage(bloomCanvas, 0, 0, W, H);
+  ctx.restore();
 }
 
 // ============================================================
@@ -817,7 +1401,7 @@ function drawBackground(elapsed) {
 function drawShockwaves() {
   shockwaves=shockwaves.filter(sw=>{
     sw.r+=sw.speed; if(sw.r>=sw.maxR) return false;
-    const pg=sw.r/sw.maxR, al=(1-pg)*0.65, lw=2.5*(1-pg*0.7)+0.3;
+    const pg=sw.r/sw.maxR, al=(1-pg)*0.08, lw=1.2*(1-pg*0.7)+0.3;
     const {r,g,b}=sw.color;
     ctx.beginPath(); ctx.arc(sw.x,sw.y,sw.r,0,Math.PI*2);
     ctx.strokeStyle=`rgba(${r},${g},${b},${al})`; ctx.lineWidth=lw; ctx.stroke();
@@ -851,20 +1435,48 @@ function drawTouchBeam() {
 // 二十七、主动画循环
 // ============================================================
 function animate() {
-  const elapsed=performance.now()-startTime;
+  const elapsed = performance.now() - startTime;
   frameCount++;
 
+  updateLife();      // 呼吸 / 困倦 / 睡着 → lifeFactor
+  updateSunrise();   // 第100夜日出序列推进
+
+  // 揭幕 / 黑暗颗粒透明度推进（缓动，约一次呼吸的尺度）
+  const bgTarget = (introState >= St.SPREAD)     ? 1 : 0;
+  bgRevealAlpha += (bgTarget - bgRevealAlpha) * 0.012;
+  const grTarget = (introState <= St.FIRST_STAR) ? 1 : 0;
+  grainAlpha    += (grTarget - grainAlpha) * 0.02;
+
   drawBackground(elapsed);
-  drawMeteors();
-  updateMouseHistory();
-  drawMouseTrail();
+  drawGrain(elapsed);
+
+  // 流星/鼠标光尾 + 记忆反馈：仅完全交互态（入场期间不响应鼠标）
+  if (introState === St.COMPLETE) {
+    updateShyStar();
+    updateSecretStar();
+    recordTrace();
+    const nowMs = performance.now();
+    if (nowMs - traceSaveT > 8000) { saveTrace(); traceSaveT = nowMs; }
+    drawMeteors();
+    updateMouseHistory();
+    drawMouseTrail();
+  }
+
   particles.forEach(p=>p.drawTrail(elapsed));
-  drawLines();
+  // drawLines();        // 星野不自动连线；「连星成座」留待第3步
   particles.forEach(p=>{ p.update(elapsed); p.draw(elapsed); });
-  updateDrawOrbit();
+  drawBloom();           // 柔光：粒子的弥散辉光
+  // updateDrawOrbit();  // 心形星环（旧设计），已停用
   drawShockwaves();
   drawTouchBeam();
-  starFollowers.forEach(s=>{ s.update(elapsed); s.draw(elapsed); });
+  drawDust();            // 名字碎成的星尘
+  drawMoon();            // 生日弯月
+
+  if (introState === St.COMPLETE) {
+    drawRipples();        // 涟漪回应的淡环
+    drawDragPreview();    // 连星成座的拖拽预览
+    starFollowers.forEach(s=>{ s.update(elapsed); s.draw(elapsed); });
+  }
 
   requestAnimationFrame(animate);
 }
@@ -876,42 +1488,65 @@ window.addEventListener('mousemove', e => {
   mouse.x = e.clientX;
   mouse.y = e.clientY;
   lastMouseMoveTime = performance.now();
+  lastActivityT     = lastMouseMoveTime;   // 唤醒/保持清醒
 
-  onMouseMoved(e.clientX, e.clientY); // 声音一：鼠标微风
+  onFirstGesture();                    // 首次移动：解锁声音 + 推进开场
+  onMouseMoved(e.clientX, e.clientY);  // 声音一：鼠标微风
 });
 window.addEventListener('mouseleave',()=>{ mouse.x=-9999; mouse.y=-9999; });
 
-window.addEventListener('click', e=>{
-  if (Date.now()-lastTouchTime<350) return;
-  recordClick(); explode(e.clientX,e.clientY);
+// 指针：轻点=向天空提问；从一颗星拖到另一颗星=连成星座
+function endPress(x, y) {
+  if (!press) return;
+  const moved = Math.hypot(x - press.sx, y - press.sy);
+  if (moved < CONNECT_MIN) {
+    askSky(x, y);                                   // 轻点 = 提问
+  } else if (press.star) {
+    const end = nearestStar(x, y, STAR_GRAB);
+    if (end && end !== press.star) addConstellation(press.star, end);  // 拖拽 = 连星
+  }
+  press = null;
+}
+window.addEventListener('mousedown', e=>{
+  if (Date.now()-lastTouchTime < 400) return;       // 忽略触摸合成的鼠标事件
+  if (e.target === musicBtn) return;
+  onFirstGesture();
+  lastActivityT = performance.now();
+  press = { sx:e.clientX, sy:e.clientY, star:nearestStar(e.clientX,e.clientY,STAR_GRAB), t:Date.now() };
+});
+window.addEventListener('mouseup', e=>{
+  if (Date.now()-lastTouchTime < 400 || !press) { press = null; return; }
+  endPress(e.clientX, e.clientY);
 });
 
-// Ctrl+L：彩蛋二
-window.addEventListener('keydown', e=>{
-  if (e.ctrlKey&&e.key==='l') { e.preventDefault(); triggerEgg2(); }
-});
+window.addEventListener('keydown', e=>{ onFirstGesture(); });   // 任意按键也可解锁声音/推进开场
 
 // 触摸
 window.addEventListener('touchstart', e=>{
   lastTouchTime=Date.now();
   const t=e.touches[0]; mouse.x=t.clientX; mouse.y=t.clientY;
-  if (e.touches.length===1) { recordClick(); explode(t.clientX,t.clientY); }
-  if (e.touches.length===3) triggerEgg2(); // 三指触发彩蛋二
+  onFirstGesture();
+  lastActivityT = performance.now();
+  if (e.touches.length===1) press = { sx:t.clientX, sy:t.clientY, star:nearestStar(t.clientX,t.clientY,STAR_GRAB), t:Date.now() };
 }, {passive:true});
 
 window.addEventListener('touchmove', e=>{
   touchPoints=[];
   for(let i=0;i<Math.min(e.touches.length,2);i++) touchPoints.push({x:e.touches[i].clientX,y:e.touches[i].clientY});
   mouse.x=touchPoints[0].x; mouse.y=touchPoints[0].y;
+  lastMouseMoveTime = lastActivityT = performance.now();
 },{passive:true});
 
 window.addEventListener('touchend', e=>{
   touchPoints=[];
+  if (press && e.changedTouches && e.changedTouches.length) {
+    const t = e.changedTouches[0];
+    endPress(t.clientX, t.clientY);
+  } else { press = null; }
   if(e.touches.length===0){mouse.x=-9999;mouse.y=-9999;}
 },{passive:true});
 
-// 音乐按钮：完整切换逻辑（开/关循环）
-let tipTimer = null;
+// ♫ 按钮：静音 / 取消静音
 musicBtn.addEventListener('click', e=>{
   e.stopPropagation();
   toggleMusic();
@@ -919,124 +1554,173 @@ musicBtn.addEventListener('click', e=>{
 
 window.addEventListener('resize',()=>{ startTime=performance.now(); init(); });
 
-// ============================================================
-// 音频系统 v3（HTML5 Audio · 本地文件 · 零依赖）
-// ============================================================
+// 切走标签页：屏住呼吸；切回：轻轻呼出（重置帧时戳，避免 dt 暴涨）
+document.addEventListener('visibilitychange', ()=>{
+  breathFrozen = document.hidden;
+  if (document.hidden) saveTrace();                       // 切走时存一次痕迹
+  else lastFrameT = performance.now();
+});
 
-// 通用播放（低频一次性音效用：clone 保证不打断）
-function playSound(snd, vol) {
-  if (!soundEnabled) return;
-  const clip = snd.cloneNode();
-  clip.volume = Math.max(0, Math.min(1, vol));
-  clip.play().catch(() => {});
+// ============================================================
+// 音频系统（Tone.js 合成钢琴/和弦 + 原生 Web Audio 低频 drone / 叮）
+// 零外部音频文件、零循环 BGM；声音由「她的第一次触碰」解锁。
+// ============================================================
+let toneReady = false, audioStarted = false, audioMuted = false, herNotePlayed = false;
+let actx = null, synth = null, reverb = null, masterVol = null;
+let droneOsc = null, droneGain = null, droneFilter = null;
+let ambientTimer = null;
+
+// 五声音阶（C 大调五声，跨两个八度）；随访问每 10 夜多解锁一个音
+const PENTA    = ['C4','D4','E4','G4','A4','C5','D5','E5','G5','A5'];
+const HER_NOTE = 'A4';   // 她的专属音（开场反复出现；也在五声里）
+function unlockedNoteCount(){ return Math.max(3, Math.min(PENTA.length, 3 + Math.floor(visitCount / 10))); }
+function unlockedPool(){ return PENTA.slice(0, unlockedNoteCount()); }
+
+// 动态注入 Tone.js（CDN）——页面加载即预取，等她第一次触碰时多半已就绪
+function loadTone(){
+  if (window.Tone) { toneReady = true; return; }
+  const s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js';
+  s.async = true;
+  s.onload  = () => { toneReady = true; if (audioUnlocked && !audioStarted) startAudio(); };
+  s.onerror = () => { toneReady = false; };
+  document.head.appendChild(s);
+}
+loadTone();
+
+// 首次触碰：若 Tone 就绪则启动音频（否则 onload 时自动补启动）
+function audioOnFirstGesture(){ if (!audioStarted && toneReady) startAudio(); }
+
+async function startAudio(){
+  if (audioStarted || !window.Tone) return;
+  audioStarted = true;
+  try {
+    await Tone.start();
+    actx = Tone.getContext().rawContext;
+
+    // Tone：钢琴单音 + 终曲和弦（柔和正弦 + 长混响）
+    masterVol = new Tone.Volume(-11).toDestination();
+    reverb    = new Tone.Reverb({ decay: 7, wet: 0.5 }).connect(masterVol);
+    synth     = new Tone.PolySynth(Tone.Synth).connect(reverb);
+    synth.set({
+      oscillator: { type: 'sine' },
+      envelope:   { attack: 0.04, decay: 0.7, sustain: 0.05, release: 3.6 },
+      volume: -9,
+    });
+
+    // 原生 Web Audio：40-50Hz 低频 drone + 缓慢 LFO 起伏
+    droneGain   = actx.createGain();   droneGain.gain.value = 0;
+    droneFilter = actx.createBiquadFilter(); droneFilter.type = 'lowpass'; droneFilter.frequency.value = 120;
+    droneOsc    = actx.createOscillator(); droneOsc.type = 'sine'; droneOsc.frequency.value = 44;
+    const lfo     = actx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.08; // ~12s
+    const lfoGain = actx.createGain(); lfoGain.gain.value = 0.018;
+    lfo.connect(lfoGain); lfoGain.connect(droneGain.gain);
+    droneOsc.connect(droneFilter); droneFilter.connect(droneGain); droneGain.connect(actx.destination);
+    droneOsc.start(); lfo.start();
+    droneGain.gain.setTargetAtTime(0.05, actx.currentTime, 3);   // 缓缓淡入
+
+    if (musicBtn) { musicBtn.style.color = 'rgba(200,215,255,0.8)'; musicBtn.style.borderColor = 'rgba(200,215,255,0.4)'; }
+
+    playHerNote();          // 她的专属音（首次触碰）
+    startAmbientPiano();
+    if (isAsleep) setSleepState(true);
+  } catch(e) { audioStarted = false; }
 }
 
-// 强制播放（不受 soundEnabled 限制，用于关闭确认音）
-function playSoundForce(snd, vol) {
-  const clip = snd.cloneNode();
-  clip.volume = Math.max(0, Math.min(1, vol));
-  clip.play().catch(() => {});
+// 她的专属单音（每次会话只在开场响一次；之后作为五声之一在环境里复现）
+function playHerNote(){
+  if (herNotePlayed || !audioStarted || audioMuted || !synth || introState < St.FIRST_STAR) return;
+  herNotePlayed = true;
+  synth.triggerAttackRelease(HER_NOTE, 2.4, undefined, 0.55);
 }
 
-// ============================================================
-// 声音一：鼠标微风（鼠标跟随音）
-// ============================================================
-// 【触发源】只由 mousemove 事件调用 —— 鼠标完全静止时浏览器不派发
-//   mousemove，本函数根本不会执行，从源头保证“静止绝对无声”。
-// 【移动检测】用本次事件的真实位移 dist 累加，dist 只可能 ≥ 0，
-//   不会把静止误判为移动。
-// 【节流控制】累计位移满 100px 播放一次，随即归零重新累计。
-//   纯距离节流，不叠加时间节流（时间节流会在快速移动时误伤声音）。
-// 【播放方式】走声部轮转池 playChimeMove，相邻触发用不同副本，
-//   不会自我打断 —— 这是“移动才响”得以成立的关键。
-function onMouseMoved(x, y) {
-  // 首次调用：仅记录起点坐标，不计入位移
-  if (mouseSoundLastX < 0) {
-    mouseSoundLastX = x; mouseSoundLastY = y;
-    return;
+// drone 在 startAudio 内启动；保留空函数以兼容旧调用点
+function startDrone(){}
+
+// 睡着：低鸣变深、钢琴停；醒来：恢复
+function setSleepState(asleep){
+  if (!audioStarted) return;
+  if (droneOsc && droneFilter && actx) {
+    const t = actx.currentTime;
+    droneOsc.frequency.setTargetAtTime(asleep ? 38 : 44, t, 2);
+    droneFilter.frequency.setTargetAtTime(asleep ? 80 : 120, t, 2);
   }
-
-  // [移动检测] 本次 mousemove 的实际位移
-  const dx   = x - mouseSoundLastX;
-  const dy   = y - mouseSoundLastY;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  mouseSoundLastX = x;
-  mouseSoundLastY = y;
-
-  // [节流控制] 累加位移，未满 100px 继续等待
-  mouseSoundAccum += dist;
-  if (mouseSoundAccum < 100) return;
-  mouseSoundAccum = 0;                 // 满 100px：归零，开始下一轮
-
-  // [播放控制] 总开关；轮转池播放，音量 0.08（极轻柔）
-  if (!soundEnabled) return;
-  playChimeMove(0.08);
+  if (asleep) stopAmbientPiano(); else startAmbientPiano();
 }
 
-// ============================================================
-// 声音二：粒子互动音（靠近增强）
-// ============================================================
-// 【触发源】由 Particle.update() 在粒子落入鼠标斥力区（距离 < 150px，
-//   即 MOUSE_OUTER）时逐粒子调用 —— 粒子自由漂浮、不在范围内时根本
-//   不会调用本函数。这就是“距离 < 150px 才触发”的保证。
-// 【移动检测】额外加一道闸：若 120ms 内没有任何 mousemove 事件，
-//   视为鼠标静止 → 直接返回。这样即便光标静止地压在爱心上、粒子
-//   仍处于 150px 内，也不会出声，满足“完全静止应无声”。
-// 【冷却控制】触发后 200ms 内忽略一切互动音，避免众多粒子同帧触发
-//   导致密集叠加。
-// 【概率控制】5% 概率，使其偶发、若隐若现。
-function maybePlayStarGlint() {
-  // [播放控制] 总开关
-  if (!soundEnabled) return;
+// 稀疏环境钢琴：每隔 20~45s 一个随机已解锁音；睡着/隐藏/静音/非交互态时不响
+// （沉默本身才是旋律 —— 音与音之间的空白是故意的）
+function startAmbientPiano(){
+  stopAmbientPiano();
+  const tick = () => {
+    if (audioStarted && !audioMuted && !isAsleep && !document.hidden && introState === St.COMPLETE && synth) {
+      const pool = unlockedPool();
+      synth.triggerAttackRelease(pool[Math.floor(Math.random()*pool.length)], 2.6, undefined, 0.42);
+    }
+    ambientTimer = setTimeout(tick, 20000 + Math.random()*25000);
+  };
+  ambientTimer = setTimeout(tick, 12000 + Math.random()*15000);
+}
+function stopAmbientPiano(){ if (ambientTimer) { clearTimeout(ambientTimer); ambientTimer = null; } }
 
-  // [移动检测] 120ms 内无 mousemove → 鼠标静止 → 不触发
+// 温柔绽放 / 连星成座：一个柔和的小和音（2 个已解锁音）
+function playBloomChord(){
+  if (!audioStarted || audioMuted || !synth) return;
+  const pool = unlockedPool();
+  const a = pool[Math.floor(Math.random()*pool.length)];
+  const b = pool[Math.floor(Math.random()*pool.length)];
+  synth.triggerAttackRelease([a, b], 2.2, undefined, 0.4);
+}
+
+// 终曲和弦（第100夜）：她听过的所有音，第一次同时响起（待第100夜序列调用）
+function playFinalChord(){
+  if (!audioStarted || !synth) return;
+  if (masterVol) masterVol.mute = false;
+  synth.triggerAttackRelease(PENTA.slice(), 6.5, undefined, 0.7);
+}
+
+// 交互极轻「叮」：原生 Web Audio，随机音高，每次都略不同
+function playDing(vol){
+  if (!audioStarted || audioMuted || !actx) return;
+  const HI = [880, 988, 1046, 1175, 1318, 1397, 1568];   // 高八度五声附近
+  const f  = HI[Math.floor(Math.random()*HI.length)] * (0.99 + Math.random()*0.02);
+  const o  = actx.createOscillator(); o.type = 'sine'; o.frequency.value = f;
+  const g  = actx.createGain();
+  const t  = actx.currentTime, v = (vol || 0.05);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(v, t + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+  o.connect(g); g.connect(actx.destination);
+  o.start(t); o.stop(t + 0.55);
+}
+
+// 鼠标移动：偶尔一声极轻的叮（替代旧风铃；更稀疏）
+function onMouseMoved(x, y){
+  if (mouseSoundLastX < 0) { mouseSoundLastX = x; mouseSoundLastY = y; return; }
+  mouseSoundAccum += Math.hypot(x - mouseSoundLastX, y - mouseSoundLastY);
+  mouseSoundLastX = x; mouseSoundLastY = y;
+  if (mouseSoundAccum < 240) return;
+  mouseSoundAccum = 0;
+  if (Math.random() < 0.45) playDing(0.04);
+}
+
+// 粒子互动音：靠近时偶发的极轻叮
+function maybePlayStarGlint(){
   const now = performance.now();
-  if (now - lastMouseMoveTime > 120) return;
-
-  // [冷却控制] 距上次互动音不足 200ms → 跳过
-  if (now - lastParticleSndT < 200) return;
-
-  // [概率控制] 5% 随机触发
-  if (Math.random() > 0.05) return;
-
-  // 满足全部条件：轮转池播放，音量 0.12（比微风略清晰）
+  if (now - lastMouseMoveTime > 120) return;       // 静止不响
+  if (now - lastParticleSndT < 320) return;        // 冷却
+  if (Math.random() > 0.04) return;                // 偶发
   lastParticleSndT = now;
-  playChimePush(0.12);
+  playDing(0.05);
 }
 
-// ---- 三、烟花绽放音 -----------------------------------------
-// 修复：currentTime = FIREWORK_SKIP 跳过文件开头的静音段
-function playFireworkBloom() {
-  if (!soundEnabled) return;
-  sndFirework.currentTime = FIREWORK_SKIP;
-  sndFirework.volume = 0.3;
-  sndFirework.play().catch(() => {});
-}
-
-// ---- 四、彩蛋八音盒音 ---------------------------------------
-function playMusicBoxMelody() {
-  playSound(sndMagic, 0.25);
-}
-
-// ---- 五、♫ 按钮切换（奇=开，偶=关）------------------------
-function toggleMusic() {
-  musicToggleCount++;
-  soundEnabled = musicToggleCount % 2 === 1;
-
-  if (soundEnabled) {
-    playSound(sndSwitchOn, 0.2);
-    if (bgMusicEl) bgMusicEl.play().catch(() => {});
-    musicBtn.style.color       = 'rgba(255,154,178,0.88)';
-    musicBtn.style.borderColor = 'rgba(255,154,178,0.45)';
-    musicTip.style.opacity     = '1';
-    clearTimeout(tipTimer);
-    tipTimer = setTimeout(() => { musicTip.style.opacity = '0'; }, 3000);
-  } else {
-    playSoundForce(sndSwitchOff, 0.2);
-    if (bgMusicEl) bgMusicEl.pause();
-    musicBtn.style.color       = '';
-    musicBtn.style.borderColor = '';
-  }
+// ♫ 按钮：静音 / 取消静音（不再是 BGM 开关）
+function toggleMusic(){
+  audioMuted = !audioMuted;
+  if (masterVol) masterVol.mute = audioMuted;
+  if (droneGain && actx) droneGain.gain.setTargetAtTime(audioMuted ? 0 : 0.05, actx.currentTime, 0.4);
+  if (audioMuted) { musicBtn.style.color = ''; musicBtn.style.borderColor = ''; }
+  else            { musicBtn.style.color = 'rgba(200,215,255,0.8)'; musicBtn.style.borderColor = 'rgba(200,215,255,0.4)'; }
 }
 
 // ============================================================

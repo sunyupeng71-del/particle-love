@@ -4,12 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#080812" />
-  <title>给范晓语</title>
-
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@500;600&family=Noto+Serif+SC:wght@300;400&family=Cormorant+Garamond:ital,wght@0,300;1,300&display=swap" rel="stylesheet" />
-
+  <title>✦</title>
+  <link rel="icon" href="data:," />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -17,44 +13,19 @@
   <!-- 最底层：粒子 + 星空全在这里渲染 -->
   <canvas id="canvas"></canvas>
 
-  <!-- ── 入场动画层 ─────────────────────────── -->
+  <!-- 文字层（七句话；内容、定位、显隐全部由 script.js 控制） -->
   <div id="intro-wrap">
-    <!-- 第一行入场文字 -->
-    <div id="intro-line1" class="intro-line">在亿万人海中</div>
-    <!-- 第二行入场文字 -->
-    <div id="intro-line2" class="intro-line">我只想拥抱一个名为「范晓语」的女孩儿</div>
+    <div id="intro-line1" class="intro-line"></div>
+    <div id="intro-line2" class="intro-line"></div>
   </div>
 
-  <!-- ── 主文字组（爱心下方） ───────────────── -->
-  <div id="text-group">
-    <div id="name-text">范晓语</div>
-    <div class="deco-line"></div>
-    <div id="sub-text"></div>
-    <div class="deco-line"></div>
-  </div>
+  <!-- 声音开关（静音 / 取消静音；声音由首次触碰解锁） -->
+  <button id="music-btn" aria-label="声音">♫</button>
 
-  <!-- ── 彩蛋一：三连击 ────────────────────── -->
-  <div id="egg1-msg">爱是醒来发现这不是梦</div>
-
-  <!-- ── 彩蛋二：Ctrl+L / 三指 ─────────────── -->
-  <div id="egg2-msg">想你的每一秒</div>
-
-  <!-- ── 彩蛋三：5分钟自动 ──────────────────── -->
-  <div id="egg3-msg">你还在看，我很开心</div>
-
-  <!-- ── 烟花名字浮现 ───────────────────────── -->
-  <div id="firework-name">范晓语</div>
-
-  <!-- ── 音乐按钮 ──────────────────────────── -->
-  <button id="music-btn" aria-label="音乐">♫</button>
-  <div id="music-tip">这是范晓语的专属页面，戴上耳机，放一首你们喜欢的歌吧 ♪</div>
-
-  <!-- ── 隐藏签名 ──────────────────────────── -->
+  <!-- 隐藏签名 -->
   <footer id="page-footer">/* Built with love, for 范晓语. 2026 */</footer>
 
-  <!-- 背景音乐（可选：将 bg-music.mp3 放到同目录即可自动播放） -->
-  <audio id="bgMusic" src="音乐/bg-music.mp3" loop preload="none"></audio>
-
+  <!-- Tone.js 由 script.js 在首次交互时动态注入，无需在此引入 -->
   <script src="script.js"></script>
 </body>
 </html>
