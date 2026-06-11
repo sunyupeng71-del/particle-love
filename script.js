@@ -178,6 +178,35 @@ let lampSwayT = 0;                     // 久别重逢「晃一下」的起始�
 let lampPresence = 1;                  // 存在感（与她的活跃度成反比，平滑）
 let lampDX = 0, lampDY = 0;            // 本帧灯心总偏移（lean+sway+jitter）
 let lampBright = 1;                    // 本帧灯亮度倍率（presence×flicker×lean）
+
+// ---- 夜风：常态宇宙的天气地基（《夜风与旅人》第一阶段）------
+let windAngle = 0, windDirX = 1, windDirY = 0;   // 风向（约12分钟缓慢转一圈）
+let windStrength = 0;        // 风力 0~1（含无风之夜）
+let windSwayPhase = 0;       // 整片星野「俯仰」相位
+let windWake = 1;            // 风的清醒度（困倦放缓、睡着停）
+let windGustT0 = -1e9;       // 当前阵风起始（很久以前=无）
+let windGustNext = 0;        // 下一阵风时刻
+let windPrevT = performance.now();
+let prevAsleep = false;
+let woX = 0, woY = 0;        // windOffset 的输出（scratch，避免每帧分配数组）
+let mouseVX = 0, mouseVY = 0, prevMX = -9999, prevMY = -9999;  // 平滑鼠标速度（她的流）
+const SWAY_MAX = 6;          // 最大摆幅(px，近层满)
+const GUST_DUR = 7500;       // 阵风横穿时长(ms)
+// 今夜的天气性格（按日期种子：约 1/5 夜近乎无风）；?wind=calm|high 可强制
+let _wseed = ((_now.getFullYear()*1000 + (_now.getMonth()+1)*32 + _now.getDate()) >>> 0) || 1;
+function _wrand(){ _wseed = (_wseed*1664525 + 1013904223) >>> 0; return _wseed / 4294967296; }
+const _windDbg = Q.get('wind');
+const NIGHT_WIND_MAX = _windDbg === 'calm' ? 0.08 : _windDbg === 'high' ? 1.0
+                     : ((_wrand() < 0.2) ? (0.05 + _wrand()*0.20) : (0.5 + _wrand()*0.5));
+const NIGHT_DIR0 = _wrand() * Math.PI * 2;
+// 今夜云量（按日期种子：约 1/4 夜无云）；?cloud=clear|heavy 可强制
+const NIGHT_CLOUDS = (() => {
+  const cq = Q.get('cloud');
+  if (cq === 'clear') return 0; if (cq === 'heavy') return 3;
+  return (_wrand() < 0.25) ? 0 : (1 + (_wrand() < 0.5 ? 1 : 2));   // 否则 1~3 片
+})();
+let dust = [];               // 星尘：随风横渡的微尘，唯独穿过长明的光才被点亮
+let clouds = [];             // 云影：无形的「星光变弱的区域」，遮得住所有星、唯独遮不住灯
 const LAMP_FX = 0.42, LAMP_FY = 0.60;  // 灯的家：第一夜第一颗星亮起的地方
 // 时辰：凌晨烧得最旺，白天几乎不退（门廊灯）；它不随全场清醒度/日出变暗
 const LAMP_DAY = (hour >= 9 && hour < 17) ? 0.82 : ((hour >= 0 && hour < 5) ? 1.0 : 0.92);
@@ -340,11 +369,12 @@ function drawBgStars(elapsed, mul) {
     const br    = bgStarBuf[b+3] * (0.45 + depth * 0.75)
                   * (0.55 + 0.45 * Math.sin(elapsed * bgStarBuf[b+4] + bgStarBuf[b+5])) * mul;
     if (br < 0.01) continue;
-    const x = cx + Math.cos(ang) * d - mx * depth * 0.035;
-    const y = cy + Math.sin(ang) * d - my * depth * 0.035;
+    let x = cx + Math.cos(ang) * d - mx * depth * 0.035;
+    let y = cy + Math.sin(ang) * d - my * depth * 0.035;
+    windOffset(x, y, depth); x += woX; y += woY;   // 夜风：星随风轻轻俯仰（景深分配）
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(208,220,255,${br.toFixed(2)})`;
+    ctx.fillStyle = `rgba(208,220,255,${(br * cloudDim(x, y)).toFixed(2)})`;   // 云影：经过处星光变弱
     ctx.fill();
   }
 }
@@ -583,7 +613,10 @@ class Particle {
       const ld2 = (this.x - lampX) * (this.x - lampX) + (this.y - lampY) * (this.y - lampY);
       if (ld2 < lampR * lampR) va *= 1 + (1 - Math.sqrt(ld2) / lampR) * 0.7;
     }
+    va *= cloudDim(this.x, this.y);        // 云影：经过处星光变弱（灯不受影响）
     if (va < 0.01) return;                 // 尚未点亮 / 睡得太深：不画
+    windOffset(this.x, this.y, 0.8);       // 夜风：星野随风俯仰（近层，仅绘制偏移、不动物理）
+    const px = this.x + woX, py = this.y + woY;
     const r  = this.radius(elapsed);
     // 极淡的冷暖微漂（30s 一周期），克制，不再粉紫
     const drift  = Math.sin(elapsed / 30000 * Math.PI * 2 + this.pulsePhase);
@@ -597,13 +630,13 @@ class Particle {
       const glr   = this.type === 'bright' ? Math.min(gr+20,255) : gr;
       const glg   = this.type === 'bright' ? Math.min(gg+10,255) : gg;
       const ga    = Math.min(1, (this.type === 'bright' ? 0.75 : 0.44) * va * shyB);
-      const grd   = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, glowR);
+      const grd   = ctx.createRadialGradient(px, py, 0, px, py, glowR);
       grd.addColorStop(0, `rgba(${glr},${glg},${gb},${ga})`);
       grd.addColorStop(1, `rgba(${gr},${gg},${gb},0)`);
-      ctx.beginPath(); ctx.arc(this.x, this.y, glowR, 0, Math.PI*2);
+      ctx.beginPath(); ctx.arc(px, py, glowR, 0, Math.PI*2);
       ctx.fillStyle = grd; ctx.fill();
     }
-    ctx.beginPath(); ctx.arc(this.x, this.y, r, 0, Math.PI*2);
+    ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2);
     ctx.fillStyle = `rgba(${gr},${gg},${gb},${((this.type==='ambient'?0.68:1.0)*va).toFixed(3)})`;
     ctx.fill();
   }
@@ -797,6 +830,8 @@ function init() {
     initBgStars();
   }
   initLamp();   // 长明的几何与纱（resize 重算几何、保留纱）
+  initDust();   // 星尘
+  initClouds(); // 云影
 }
 
 // ============================================================
@@ -857,6 +892,7 @@ function enterComplete() {
   introState = St.COMPLETE;
   meteorTimeout = setTimeout(spawnMeteor, 8000 + Math.random()*12000);
   lampPulseTimer = performance.now() + 30000 + Math.random()*30000;   // 长明首次脉动：30~60s 后
+  seedTravelers();   // 她推门进来时，天上已有人正在路过
 
   // 第100夜日出（前几分钟一切如常，安静下来后才发生）
   if (DBG.sunrise || (visitCount >= 100 && !hasSaid('s_hundred'))) {
@@ -999,6 +1035,7 @@ function heartBlossom(cx, cy) {
   contractTimer = setTimeout(() => {            // 聚拢 0.7s 后
     explodePhase = 'hold';
     addShockwaves(cx, cy);                       // 极淡冲击波
+    dustGust(cx, cy);                            // 绽放气流：把附近的尘轻轻荡开
     playBloomChord();                            // 第5步：合成音
     setTimeout(() => {                           // 停顿 0.5s 后轻轻散开
       explodePhase = 'snow';
@@ -1182,6 +1219,8 @@ function drawBackground(elapsed) {
     }
     const ms = m * (1 - starFade);                   // 日出时整片天（含痕迹/星座/守夜星）一起隐去
     drawBgStars(elapsed, ms * TT.starMul);
+    drawDustMotes(bgRevealAlpha * (1 - starFade));   // 星尘：穿过灯光才被点亮（不随睡眠变暗，只随揭幕/日出）
+    drawTravelers(bgRevealAlpha * (1 - starFade));   // 夜行者：横穿夜空的微光
     drawTraceHeatmap(ms);                            // 她走过的痕迹（跨会话）
     drawConstellations(ms);                          // 她画下的星座（跨会话）
     bokehBlobs.forEach(b=>{ b.update(); b.draw(ms); });
@@ -1316,6 +1355,266 @@ function drawLampCore(elapsed) {
   ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(lx, ly, cr, 0, Math.PI*2); ctx.fill();
   ctx.beginPath(); ctx.arc(lx, ly, 1.9, 0, Math.PI*2);
   ctx.fillStyle = `rgba(255,255,255,${g.toFixed(3)})`; ctx.fill();
+}
+
+// ============================================================
+// 夜风：风场推进 + 查询（星野的共同摇曳 / 阵风 / 她的流）
+// ============================================================
+function updateWind(elapsed) {
+  const now = performance.now();
+  const dt = Math.min(64, now - windPrevT); windPrevT = now;
+  windAngle = NIGHT_DIR0 + elapsed * (Math.PI*2 / 720000);          // 12 分钟缓慢转一圈
+  windDirX = Math.cos(windAngle); windDirY = Math.sin(windAngle);
+  const lfo = 0.5 + 0.5 * Math.sin(elapsed * (Math.PI*2 / 55000) + 1.3);
+  const sTarget = NIGHT_WIND_MAX * (0.25 + 0.75 * lfo);             // 风力在无风↔微风间起伏
+  windStrength += (sTarget - windStrength) * 0.01;
+  windSwayPhase += dt * (Math.PI*2 / 6000);                         // 约 6s 一次俯仰
+  const idle = now - lastActivityT;
+  const wkT = idle < 120000 ? 1 : (idle < 600000 ? 0.5 : 0);        // 困倦放缓、睡着停
+  windWake += (wkT - windWake) * 0.01;
+  if (now > windGustNext && windStrength > 0.12 && !isAsleep) {     // 每 1~2 分钟一阵风
+    windGustT0 = now; windGustNext = now + 60000 + Math.random()*60000;
+  }
+  if (prevAsleep && !isAsleep) windGustT0 = now;                    // 苏醒：第一阵风穿野而过
+  prevAsleep = isAsleep;
+  if (mouse.x >= 0 && prevMX >= 0) {                                // 平滑鼠标速度（她的流）
+    mouseVX = mouseVX*0.85 + (mouse.x - prevMX)*0.15;
+    mouseVY = mouseVY*0.85 + (mouse.y - prevMY)*0.15;
+  } else { mouseVX *= 0.85; mouseVY *= 0.85; }
+  prevMX = mouse.x; prevMY = mouse.y;
+
+  // 风的气声：随风力起伏、阵风时微涨；睡着/静音则息（节流更新，避免每帧排程）
+  if (windGain && now - windGainUpdT > 180) {
+    windGainUpdT = now;
+    let g = audioMuted ? 0 : windStrength * windWake * 0.05;
+    const ga = now - windGustT0;
+    if (ga >= 0 && ga < GUST_DUR) g += 0.028 * Math.sin((ga / GUST_DUR) * Math.PI) * windWake;
+    windGain.gain.setTargetAtTime(g, actx.currentTime, 0.4);
+    windFilter.frequency.setTargetAtTime(300 + windStrength * 260, actx.currentTime, 0.6);
+  }
+}
+
+// 查询某点的风偏移 → 写入 woX/woY（不分配数组）。depth：远 0.15 ~ 近 0.85，近层晃得多。
+function windOffset(x, y, depth) {
+  const amp = windStrength * windWake * SWAY_MAX * depth;
+  let off = amp * Math.sin(windSwayPhase);                          // 整片同方向轻轻俯仰（麦田）
+  const gustAge = performance.now() - windGustT0;
+  if (gustAge >= 0 && gustAge < GUST_DUR) {                         // 阵风：一道沿风向传播的窄带波
+    const prog  = gustAge / GUST_DUR;
+    const along = (x * windDirX + y * windDirY) / lampDiag + 0.5;
+    const db    = along - prog;
+    off += Math.exp(-(db*db) * 60) * SWAY_MAX * 1.8 * depth * windWake;   // 星依次低头又抬起
+  }
+  woX = windDirX * off; woY = windDirY * off;
+  const mv2 = mouseVX*mouseVX + mouseVY*mouseVY;                    // 她的流：光标附近的星随她飘一小段
+  if (mv2 > 0.6 && mouse.x >= 0) {
+    const mdx = x - mouse.x, mdy = y - mouse.y, md2 = mdx*mdx + mdy*mdy, R = 150;
+    if (md2 < R*R) {
+      const prox = 1 - Math.sqrt(md2)/R;
+      woX += mouseVX * prox * 0.45 * depth;
+      woY += mouseVY * prox * 0.45 * depth;
+    }
+  }
+}
+
+// ============================================================
+// 星尘：随风横渡的微尘，唯独穿过长明的光晕才被点亮（光要落在东西上才看得见）
+// ============================================================
+function initDust() {
+  if (dust.length) return;
+  for (let i = 0; i < 54; i++) {
+    const depth = 0.25 + Math.random() * 0.75;        // 深浅不一
+    dust.push({
+      x: Math.random() * W, y: Math.random() * H, depth,
+      baseA: 0.035 + Math.random() * 0.055,            // 平时近乎不可见
+      bvx: (Math.random() - 0.5) * 0.35,               // 自身基础漂移（快慢不一）
+      bvy: (Math.random() - 0.5) * 0.35,
+      vx: 0, vy: 0,                                     // 瞬时速度（气流/她的流）
+      r: 0.5 + Math.random() * 0.7,
+    });
+  }
+}
+function updateDustMotes() {
+  if (!dust.length) return;
+  const ww  = windStrength * windWake;                 // 随风横渡（睡着 windWake→0 则尘静）
+  const mv2 = mouseVX*mouseVX + mouseVY*mouseVY;
+  for (const m of dust) {
+    m.x += windDirX * ww * (0.9 * m.depth) + m.bvx * windWake;
+    m.y += windDirY * ww * (0.9 * m.depth) + m.bvy * windWake;
+    m.x += m.vx; m.y += m.vy; m.vx *= 0.93; m.vy *= 0.93;
+    if (mv2 > 0.6 && mouse.x >= 0) {                    // 她的流：尘随她的手飘一小段
+      const dx = m.x - mouse.x, dy = m.y - mouse.y, d2 = dx*dx + dy*dy, R = 150;
+      if (d2 < R*R) { const prox = 1 - Math.sqrt(d2)/R; m.vx += mouseVX*prox*0.06*m.depth; m.vy += mouseVY*prox*0.06*m.depth; }
+    }
+    const mg = 24;                                      // 环绕：飘出一边，从另一边回来
+    if (m.x < -mg) m.x = W + mg; else if (m.x > W + mg) m.x = -mg;
+    if (m.y < -mg) m.y = H + mg; else if (m.y > H + mg) m.y = -mg;
+  }
+}
+function drawDustMotes(vis) {
+  if (vis < 0.02 || !dust.length) return;
+  for (const d of dust) {
+    let a = d.baseA * d.depth * vis;
+    if (lampR > 0) {                                    // 穿过长明光晕：被点亮
+      const ld = Math.hypot(d.x - lampX, d.y - lampY), reach = lampR * 1.15;
+      if (ld < reach) a *= 1 + (1 - ld / reach) * 9;
+    }
+    if (a < 0.004) continue;
+    const rr = d.r * (0.6 + d.depth);
+    ctx.beginPath(); ctx.arc(d.x, d.y, rr, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(222,232,255,${a.toFixed(3)})`; ctx.fill();
+  }
+}
+function dustGust(cx, cy) {                              // 绽放气流：把附近的尘轻轻荡开
+  const R = Math.min(W, H) * 0.35;
+  for (const d of dust) {
+    const dx = d.x - cx, dy = d.y - cy, dd = Math.hypot(dx, dy);
+    if (dd < R && dd > 0.1) { const f = (1 - dd / R) * 2.4; d.vx += (dx/dd)*f; d.vy += (dy/dd)*f; }
+  }
+}
+
+// ============================================================
+// 夜行者：几粒不属于星野、会移动的微光，散漫横穿夜空，走完就消失不再回来。
+// 偶尔有一位会朝灯弯过去、在灯边歇一会儿，起身离开时灯轻轻脉动一圈（灯在送客）。
+// ============================================================
+let travelers = [];
+let travelerSpawnAt = 0;
+
+function _lerpAngle(a, b, t) {
+  const d = ((b - a + Math.PI*3) % (Math.PI*2)) - Math.PI;
+  return a + d * t;
+}
+function spawnTraveler(onscreen) {
+  const now = performance.now(), mg = 30;
+  let x, y, heading;
+  if (onscreen) {                                    // 她进来时已在途中的旅人
+    x = W*(0.2+Math.random()*0.6); y = H*(0.2+Math.random()*0.6); heading = Math.random()*Math.PI*2;
+  } else {
+    const edge = Math.floor(Math.random()*4);
+    if      (edge===0){ x=-mg;   y=Math.random()*H; heading = (Math.random()-0.5)*1.2; }
+    else if (edge===1){ x=W+mg;  y=Math.random()*H; heading = Math.PI + (Math.random()-0.5)*1.2; }
+    else if (edge===2){ x=Math.random()*W; y=-mg;   heading = Math.PI/2 + (Math.random()-0.5)*1.2; }
+    else              { x=Math.random()*W; y=H+mg;  heading = -Math.PI/2 + (Math.random()-0.5)*1.2; }
+  }
+  const baseSpeed = 0.10 + Math.random()*0.12;       // 几分钟横穿
+  travelers.push({
+    x, y, heading, speed: baseSpeed, baseSpeed,
+    state: 'wander',
+    willVisit: Math.random() < 0.4,                  // 偶尔——不是每位都会
+    visitAt: now + 8000 + Math.random()*22000,
+    restUntil: 0, pauseUntil: 0, nextPause: now + 8000 + Math.random()*20000,
+    inHalo: false, notePlayed: false, phase: Math.random()*Math.PI*2,
+  });
+}
+function seedTravelers() {                            // 她推门进来时，天上已有人正在路过
+  travelers = [];
+  spawnTraveler(true);
+  if (Math.random() < 0.6) spawnTraveler(true);
+}
+function updateTravelers() {
+  const now = performance.now();
+  const want = 2;
+  if (travelers.length < want && now > travelerSpawnAt) { spawnTraveler(false); travelerSpawnAt = now + 10000 + Math.random()*25000; }
+  else if (travelers.length < 3 && now > travelerSpawnAt && Math.random() < 0.2) { spawnTraveler(false); travelerSpawnAt = now + 20000 + Math.random()*30000; }
+
+  const wk = 0.3 + 0.7 * windWake;                   // 睡着时旅人也走得倦
+  for (let i = travelers.length - 1; i >= 0; i--) {
+    const t = travelers[i];
+    t.heading += (Math.random() - 0.5) * 0.03;        // 散漫：方向缓缓游移
+
+    if (t.state === 'wander') {
+      if (now > t.pauseUntil && now > t.nextPause) { t.pauseUntil = now + 2000 + Math.random()*3500; t.nextPause = now + 22000 + Math.random()*30000; }
+      const moving = now > t.pauseUntil;
+      t.speed += ((moving ? t.baseSpeed : 0) - t.speed) * 0.04;
+      if (t.willVisit && now > t.visitAt) {           // 朝灯弯过去
+        t.heading = _lerpAngle(t.heading, Math.atan2(lampY - t.y, lampX - t.x), 0.05);
+        if (Math.hypot(t.x - lampX, t.y - lampY) < lampR * 0.8) { t.state = 'resting'; t.restUntil = now + 12000 + Math.random()*8000; }
+      }
+    } else if (t.state === 'resting') {               // 在灯边懒懒地绕半圈 / 歇着
+      const ang = Math.atan2(t.y - lampY, t.x - lampX) + 0.012;
+      const rr = lampR * 0.45;
+      t.x += (lampX + Math.cos(ang)*rr - t.x) * 0.04;
+      t.y += (lampY + Math.sin(ang)*rr - t.y) * 0.04;
+      if (!t.notePlayed) { t.notePlayed = true; playTravelerNote(); }   // 落脚换来一个极轻的钢琴单音
+      if (now > t.restUntil) { t.state = 'leaving'; t.willVisit = false; t.heading = Math.atan2(t.y - lampY, t.x - lampX); t.speed = t.baseSpeed; }
+    } else { // leaving
+      t.speed += (t.baseSpeed - t.speed) * 0.04;
+    }
+
+    if (t.state !== 'resting') {
+      t.x += (Math.cos(t.heading) * t.speed + windDirX * windStrength * windWake * 0.3) * (t.state==='wander' ? wk : 1);
+      t.y += (Math.sin(t.heading) * t.speed + windDirY * windStrength * windWake * 0.3) * (t.state==='wander' ? wk : 1);
+    }
+
+    const nowInHalo = Math.hypot(t.x - lampX, t.y - lampY) < lampR;   // 离开光晕的那一刻：灯送客
+    if (t.inHalo && !nowInHalo && t.state === 'leaving') ripples.push({ cx: lampX, cy: lampY, born: now });
+    t.inHalo = nowInHalo;
+
+    const m = 60;
+    if (t.x < -m || t.x > W + m || t.y < -m || t.y > H + m) travelers.splice(i, 1);   // 走完就消失，不再回来
+  }
+}
+function drawTravelers(vis) {
+  if (!travelers.length || vis < 0.02) return;
+  const now = performance.now();
+  for (const t of travelers) {
+    let a = (0.45 + 0.3 * Math.sin(now * 0.0019 + t.phase)) * vis * cloudDim(t.x, t.y);
+    const ld = Math.hypot(t.x - lampX, t.y - lampY), reach = lampR * 1.15;
+    if (ld < reach) a *= 1 + (1 - ld / reach) * 0.8;   // 走进灯光也更亮
+    a = Math.min(0.72, a);                              // 永远不比灯亮
+    if (a < 0.02) continue;
+    const grd = ctx.createRadialGradient(t.x, t.y, 0, t.x, t.y, 5.5);
+    grd.addColorStop(0, `rgba(226,236,255,${(a*0.6).toFixed(3)})`);
+    grd.addColorStop(1, 'rgba(226,236,255,0)');
+    ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(t.x, t.y, 5.5, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(t.x, t.y, 1.3, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(242,247,255,${a.toFixed(3)})`; ctx.fill();
+  }
+}
+function playTravelerNote() {
+  if (!audioStarted || audioMuted || !synth) return;
+  const pool = unlockedPool();
+  synth.triggerAttackRelease(pool[Math.floor(Math.random()*pool.length)], 2.2, undefined, 0.26);
+}
+
+// ============================================================
+// 云影：无形的「星光变弱的区域」随风漂过。没有轮廓、没有颜色、从不被画出来——
+// 只是几片缓缓移动的"暗"。遮得住所有星，唯独遮不住长明（天气越坏，灯越是灯）。
+// ============================================================
+function initClouds() {
+  clouds = [];
+  for (let i = 0; i < NIGHT_CLOUDS; i++) {
+    clouds.push({
+      x: Math.random()*W, y: Math.random()*H,
+      r: Math.min(W, H) * (0.32 + Math.random()*0.22),   // 巨大、柔、无轮廓
+      base: 0.16 + Math.random()*0.16,                    // 最暗约 16~32%
+      strength: 0.2,
+      dx: (Math.random()-0.5)*0.08, dy: (Math.random()-0.5)*0.08,   // 自身缓慢漂移
+      phase: Math.random()*Math.PI*2,
+    });
+  }
+}
+function updateClouds(elapsed) {
+  if (!clouds.length) return;
+  const ww = windStrength * windWake;
+  for (const c of clouds) {
+    c.x += windDirX * ww * 0.7 + c.dx;                    // 随风 + 自身漂移
+    c.y += windDirY * ww * 0.7 + c.dy;
+    c.strength = c.base * (0.55 + 0.45 * Math.sin(elapsed * 0.00005 + c.phase));  // 厚薄缓变，永不重样
+    const m = c.r;
+    if (c.x < -m) c.x = W + m; else if (c.x > W + m) c.x = -m;
+    if (c.y < -m) c.y = H + m; else if (c.y > H + m) c.y = -m;
+  }
+}
+// 某点的星光衰减系数：1=无遮，最低约 0.5（不全灭，只是寥落）。灯不调用它。
+function cloudDim(x, y) {
+  if (!clouds.length) return 1;
+  let dim = 1;
+  for (const c of clouds) {
+    const dx = x - c.x, dy = y - c.y, d2 = dx*dx + dy*dy;
+    if (d2 < c.r * c.r) { const f = 1 - Math.sqrt(d2) / c.r; dim *= 1 - c.strength * f * f; }
+  }
+  return dim < 0.5 ? 0.5 : dim;
 }
 
 // ============================================================
@@ -1470,7 +1769,7 @@ function drawTraceHeatmap(m) {
       if (v > 0.0005) traceGrid[idx] = v * 0.99996;
       if (v < 0.08) continue;
       const x = (cx + 0.5) * cw, y = (cy + 0.5) * ch;
-      const a = Math.min(0.05, v * 0.05) * m;
+      const a = Math.min(0.05, v * 0.05) * m * cloudDim(x, y);   // 云影过她的旧痕，痕迹也暗一下
       const g = ctx.createRadialGradient(x, y, 0, x, y, rr);
       g.addColorStop(0, `rgba(150,175,225,${a.toFixed(3)})`);
       g.addColorStop(1, 'rgba(150,175,225,0)');
@@ -1577,6 +1876,9 @@ function animate() {
   updateLife();      // 呼吸 / 困倦 / 睡着 → lifeFactor
   updateSunrise();   // 第100夜日出序列推进
   updateLamp();      // 长明的举止：迎向鼠标 / 久别晃一下 / 越闲越显 / 越烧越稳
+  updateWind(elapsed); // 夜风：风向 / 风力 / 阵风 / 她的流
+  updateDustMotes();   // 星尘随风横渡
+  updateClouds(elapsed); // 云影随风漂过
 
   // 揭幕 / 黑暗颗粒透明度推进（缓动，约一次呼吸的尺度）
   const bgTarget = (introState >= St.SPREAD)     ? 1 : 0;
@@ -1594,6 +1896,7 @@ function animate() {
   if (introState === St.COMPLETE) {
     updateShyStar();
     updateSecretStar();
+    updateTravelers();   // 夜行者横穿夜空、偶尔到灯边歇脚
     recordTrace();
     const nowMs = performance.now();
     if (nowMs - traceSaveT > 8000) { saveTrace(); traceSaveT = nowMs; }
@@ -1714,6 +2017,7 @@ document.addEventListener('visibilitychange', ()=>{
 let audioStarted = false, audioMuted = false, herNotePlayed = false;
 let actx = null, synth = null, reverb = null, masterVol = null;
 let droneOsc = null, droneGain = null, droneFilter = null;
+let windGain = null, windNoiseSrc = null, windFilter = null, windGainUpdT = 0;  // 风的气声
 let ambientTimer = null;
 
 // 五声音阶（C 大调五声，跨两个八度）；随访问每 10 夜多解锁一个音
@@ -1747,6 +2051,7 @@ function startAudioNow(){
     actx = new AC();
     if (actx.state === 'suspended' && actx.resume) actx.resume();
     buildDrone();
+    buildWindSound();
   } catch(e) { actx = null; }
   // 2) Tone.js：加载完成后建钢琴/和弦（用 Tone 自身的上下文；此时页面已有用户激活，可正常发声）
   loadTone(() => {
@@ -1774,6 +2079,22 @@ function buildDrone(){
   droneOsc.connect(droneFilter); droneFilter.connect(droneGain); droneGain.connect(actx.destination);
   droneOsc.start(); lfo.start();
   droneGain.gain.setTargetAtTime(0.05, actx.currentTime, 3);   // 缓缓淡入
+}
+
+// 风的气声：低通白噪声，几乎听不见，垫在 40Hz 灯丝低鸣之下；音量随风力起伏（在 updateWind 里调）
+function buildWindSound(){
+  if (!actx || windGain) return;
+  const len = Math.floor(actx.sampleRate * 2);
+  const buf = actx.createBuffer(1, len, actx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = Math.random()*2 - 1;   // 白噪声
+  windNoiseSrc = actx.createBufferSource();
+  windNoiseSrc.buffer = buf; windNoiseSrc.loop = true;
+  windFilter = actx.createBiquadFilter();
+  windFilter.type = 'lowpass'; windFilter.frequency.value = 360; windFilter.Q.value = 0.5;
+  windGain = actx.createGain(); windGain.gain.value = 0;
+  windNoiseSrc.connect(windFilter); windFilter.connect(windGain); windGain.connect(actx.destination);
+  windNoiseSrc.start();
 }
 
 // Tone.js：柔和正弦钢琴 + 长混响（用 Tone 自身的上下文）
