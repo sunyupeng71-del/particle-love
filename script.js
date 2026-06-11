@@ -165,6 +165,23 @@ function getTimeTheme(h) {
 }
 const TT = getTimeTheme(hour);
 
+// ---- 长明：常态宇宙的心脏（核+晕+纱）------------------------
+// 一盏为她留着的灯。呼吸从它荡向天边；凡经过它光晕的，都被照亮。
+let lampX = 0, lampY = 0, lampR = 0, lampDiag = 1;
+let lampWisps = [];                    // 纱：分钟级缓慢换位的雾丝
+let lampAlpha = 0;                     // 灯的揭幕度（它比宇宙先在：FIRST_STAR 起就亮）
+let moonGlow  = 0;                     // 生日弯月当前的明度（灯会因它烧旺一点）
+let lampPulseTimer = Infinity;         // 下一次脉动（无声光环）的时刻
+// 行为细节（第3步）：迎向鼠标 / 久别晃一下 / 越闲越显 / 越烧越稳
+let lampLeanX = 0, lampLeanY = 0;      // 迎向鼠标的偏移（平滑）
+let lampSwayT = 0;                     // 久别重逢「晃一下」的起始时刻
+let lampPresence = 1;                  // 存在感（与她的活跃度成反比，平滑）
+let lampDX = 0, lampDY = 0;            // 本帧灯心总偏移（lean+sway+jitter）
+let lampBright = 1;                    // 本帧灯亮度倍率（presence×flicker×lean）
+const LAMP_FX = 0.42, LAMP_FY = 0.60;  // 灯的家：第一夜第一颗星亮起的地方
+// 时辰：凌晨烧得最旺，白天几乎不退（门廊灯）；它不随全场清醒度/日出变暗
+const LAMP_DAY = (hour >= 9 && hour < 17) ? 0.82 : ((hour >= 0 && hour < 5) ? 1.0 : 0.92);
+
 // ---- 第3步：记忆与停留反馈 ----------------------------------
 let shyStar   = null;   // 认生的星（当前这一颗）
 let shyStop   = 50;     // 停在距光标多远（随访问减小，约第30夜触到）
@@ -561,6 +578,11 @@ class Particle {
         if (dd < 70) va *= (0.4 + 0.6 * (dd / 70));
       }
     }
+    // 长明：经过它光晕的星，都会被照亮（灯照亮门口）
+    if (lampR > 0) {
+      const ld2 = (this.x - lampX) * (this.x - lampX) + (this.y - lampY) * (this.y - lampY);
+      if (ld2 < lampR * lampR) va *= 1 + (1 - Math.sqrt(ld2) / lampR) * 0.7;
+    }
     if (va < 0.01) return;                 // 尚未点亮 / 睡得太深：不画
     const r  = this.radius(elapsed);
     // 极淡的冷暖微漂（30s 一周期），克制，不再粉紫
@@ -733,7 +755,8 @@ function init() {
   heartCX    = W/2;
   heartCY    = H*0.46;
 
-  const cx = W/2, cy = H/2;
+  // 粒子的初始聚拢点 = 灯的位置：星野从灯的光里向外渗出
+  const cx = LAMP_FX * W, cy = LAMP_FY * H;
 
   if (particles.length === 0) {
     const homes = buildFieldFractions(N_HEART + N_AMBIENT + EXTRA_STARS);
@@ -773,6 +796,7 @@ function init() {
     });
     initBgStars();
   }
+  initLamp();   // 长明的几何与纱（resize 重算几何、保留纱）
 }
 
 // ============================================================
@@ -797,24 +821,20 @@ function startIntro() {
   setTimeout(()=>{ advanceToSpread(); }, T_DARK + T_WAIT);
 }
 
-// 第一颗星：偏左下，独自亮起
+// 第一颗星：偏左下，独自亮起 —— 它不再是一颗会融进星野的粒子，
+// 它就是「长明」本身（淡入由 lampAlpha 驱动，见 animate）。它比宇宙先在。
 function positionFirstStar() {
-  const fs = particles[firstStarIdx];
-  firstStarPos = { x: W*0.42, y: H*0.60 };
-  fs.x = fs.tx = firstStarPos.x;
-  fs.y = fs.ty = firstStarPos.y;
-  fs.visTarget = 1;
-  playHerNote();   // 她的专属音随第一颗星响起（若 Tone 已就绪）
+  firstStarPos = { x: lampX, y: lampY };
+  playHerNote();   // 她的专属音随第一颗星（=灯）亮起而响
+  if (longAway) lampSwayT = performance.now();   // 久别重逢：灯亮起时先晃一下，像有人提灯到门口看一眼
 }
 
-// 阶段2：星野渗透 —— 粒子由中心向外扩散、错峰点亮
+// 阶段2：星野渗透 —— 粒子从灯的光里向外扩散、错峰点亮
 function advanceToSpread() {
   if (introState !== St.FIRST_STAR) return;
   introState = St.SPREAD;
   curSpring  = GATHER_SPRING;
   spreadStartT = performance.now();
-  const fs = particles[firstStarIdx];    // 第一颗星归队，融入星野
-  fs.tx = fs.heartX; fs.ty = fs.heartY;
   setTimeout(()=>{ enterNameStage(); }, 9000 * tScale);
 }
 
@@ -836,6 +856,7 @@ function enterNameStage() {
 function enterComplete() {
   introState = St.COMPLETE;
   meteorTimeout = setTimeout(spawnMeteor, 8000 + Math.random()*12000);
+  lampPulseTimer = performance.now() + 30000 + Math.random()*30000;   // 长明首次脉动：30~60s 后
 
   // 第100夜日出（前几分钟一切如常，安静下来后才发生）
   if (DBG.sunrise || (visitCount >= 100 && !hasSaid('s_hundred'))) {
@@ -1144,6 +1165,9 @@ function drawBackground(elapsed) {
   ctx.fillStyle = TT.solid;
   ctx.fillRect(0, 0, W, H);
 
+  // 长明的纱+晕：自带 lampAlpha 门，FIRST_STAR（星野尚未浮现）时就已亮 —— 它比宇宙先在
+  drawLampHalo(elapsed);
+
   if (bgRevealAlpha > 0.01) {
     const m = bgRevealAlpha * lifeFactor;
     // 时辰边缘色：清晨顶部微紫 / 黄昏底部余烬橙
@@ -1161,7 +1185,6 @@ function drawBackground(elapsed) {
     drawTraceHeatmap(ms);                            // 她走过的痕迹（跨会话）
     drawConstellations(ms);                          // 她画下的星座（跨会话）
     bokehBlobs.forEach(b=>{ b.update(); b.draw(ms); });
-    if (TT.watch) drawNightWatchStar(elapsed, ms);  // 22点后正上方的守夜星
     drawDawnLine();                                  // 底部天光（黎明进度 / 日出）
   }
 }
@@ -1177,6 +1200,122 @@ function drawNightWatchStar(elapsed, m) {
   ctx.beginPath(); ctx.arc(x, y, 11, 0, Math.PI*2); ctx.fillStyle = grd; ctx.fill();
   ctx.beginPath(); ctx.arc(x, y, 1.6, 0, Math.PI*2);
   ctx.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`; ctx.fill();
+}
+
+// ============================================================
+// 长明：常态宇宙的心脏（核 + 晕 + 纱 / 呼吸 / 脉动 / 照亮）
+// ============================================================
+function initLamp() {
+  lampX = LAMP_FX * W;
+  lampY = LAMP_FY * H;
+  lampR = Math.min(W, H) * 0.13;       // 光晕（照亮）半径
+  lampDiag = Math.hypot(W, H);
+  if (lampWisps.length === 0) {         // 纱：六缕雾丝，分钟级缓慢绕行、永不重复
+    for (let i = 0; i < 6; i++) {
+      lampWisps.push({
+        base: Math.random() * Math.PI * 2,
+        dist: 0.20 + Math.random() * 0.65,        // 相对 lampR
+        rad:  0.50 + Math.random() * 0.60,        // 相对 lampR
+        a:    0.013 + Math.random() * 0.020,
+        spd:  (Math.random() - 0.5) * 0.000022,   // rad/ms，约 5 分钟一圈
+      });
+    }
+  }
+}
+
+// 每帧更新灯的「举止」：迎向鼠标 / 久别晃一下 / 越闲越显 / 越烧越稳
+function updateLamp() {
+  const now = performance.now();
+
+  // ① 迎向鼠标：她的光标探进灯的领域时，灯心朝她轻轻倾过去（全世界都怕她碰，只有它把光递过来）
+  let tlx = 0, tly = 0, leanInfluence = 0;
+  if (mouse.x >= 0 && mouse.x <= W) {
+    const dx = mouse.x - lampX, dy = mouse.y - lampY;
+    const d  = Math.hypot(dx, dy);
+    const reach = lampR * 1.7;
+    if (d < reach && d > 0.001) {
+      leanInfluence = 1 - d / reach;                       // 边缘 0 → 中心 1
+      const mag = Math.min(d, lampR * 0.16) * leanInfluence;
+      tlx = (dx / d) * mag; tly = (dy / d) * mag;
+    }
+  }
+  lampLeanX += (tlx - lampLeanX) * 0.08;                    // 像火苗迎着一口气，缓而柔
+  lampLeanY += (tly - lampLeanY) * 0.08;
+
+  // ③ 存在感与活跃度成反比：她玩得欢，灯退成背景；她一停下，灯渐渐显出来独自守夜
+  const idle = now - lastActivityT;
+  const presenceTarget = idle < 1500 ? 0.85
+                        : (idle < 60000 ? 0.85 + ((idle - 1500) / 58500) * 0.30 : 1.15);
+  lampPresence += (presenceTarget - lampPresence) * 0.015;
+
+  // ④ 越烧越稳：最初几夜有极轻的怕生颤，约第 30 夜后纹丝不乱（她不会察觉，只觉这角落越来越「定」）
+  const steady = Math.min(1, Math.max(0, (visitCount - 1) / 30));
+  const flick  = (Math.sin(now * 0.013) + Math.sin(now * 0.0219 + 1.3)) * 0.5;
+  const jit    = (1 - steady) * lampR * 0.022;
+  const jx = flick * jit, jy = Math.sin(now * 0.017 + 0.7) * jit * 0.6;
+  const flickBright = 1 + flick * (1 - steady) * 0.05;
+
+  // ② 久别重逢：苏醒时先晃一下（像有人提着灯走到门口看了一眼），随即收住、平稳
+  let sx = 0, sy = 0;
+  if (lampSwayT) {
+    const dt = now - lampSwayT;
+    if (dt < 1700) {
+      const amp = (1 - dt / 1700) * lampR * 0.20;
+      sx = Math.sin(dt * 0.011) * amp;
+      sy = Math.sin(dt * 0.011) * amp * 0.18;
+    } else { lampSwayT = 0; }
+  }
+
+  lampDX = lampLeanX + jx + sx;
+  lampDY = lampLeanY + jy + sy;
+  lampBright = lampPresence * flickBright * (1 + leanInfluence * 0.12);   // 迎向她时也把光递近一点
+}
+
+// 纱 + 晕：背景景观层。纯呼吸（睡着不停）、白天几乎不退；不随全场清醒度/日出 starFade 变暗。
+function drawLampHalo(elapsed) {
+  if (lampAlpha < 0.01) return;
+  const breath = 0.82 + 0.18 * Math.sin(breathPhase);   // 纯呼吸：睡着也不停
+  // 不随睡眠/日出全灭：日出只褪 70%（固执的白）；生日月升烧旺；× 本帧举止亮度
+  const g0 = lampAlpha * LAMP_DAY * (1 - starFade * 0.7) * (1 + moonGlow * 0.15) * lampBright;
+  const lx = lampX + lampDX, ly = lampY + lampDY;        // 迎向鼠标 / 晃 / 颤 的灯心
+
+  // 纱：缓慢换位的雾丝（给灯以「一处地方」的体量，而非一个点）
+  for (const w of lampWisps) {
+    const ang = w.base + elapsed * w.spd;
+    const wx  = lx + Math.cos(ang) * w.dist * lampR;
+    const wy  = ly + Math.sin(ang) * w.dist * lampR;
+    const rr  = w.rad * lampR;
+    const a   = w.a * g0 * (0.7 + 0.3 * breath);
+    const grd = ctx.createRadialGradient(wx, wy, 0, wx, wy, rr);
+    grd.addColorStop(0, `rgba(208,224,255,${a.toFixed(3)})`);
+    grd.addColorStop(1, 'rgba(208,224,255,0)');
+    ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(wx, wy, rr, 0, Math.PI*2); ctx.fill();
+  }
+
+  // 晕：会呼吸的光晕（半径随呼吸胀缩；生日月升时略张开一点）
+  const haloR = lampR * (0.60 + 0.12 * breath) * (1 + moonGlow * 0.1);
+  const hg = ctx.createRadialGradient(lx, ly, 0, lx, ly, haloR);
+  hg.addColorStop(0,    `rgba(238,246,255,${(0.17 * g0).toFixed(3)})`);
+  hg.addColorStop(0.45, `rgba(220,232,255,${(0.06 * g0).toFixed(3)})`);
+  hg.addColorStop(1,    'rgba(220,232,255,0)');
+  ctx.fillStyle = hg; ctx.beginPath(); ctx.arc(lx, ly, haloR, 0, Math.PI*2); ctx.fill();
+}
+
+// 核：最亮、最定的一粒白（前景层，绘于粒子 / 柔光之上）
+function drawLampCore(elapsed) {
+  if (lampAlpha < 0.01) return;
+  const breath = 0.82 + 0.18 * Math.sin(breathPhase);
+  // 日出时它是最后一颗、仍不全灭（固执的白）；生日月升烧旺；× 本帧举止亮度
+  const g  = lampAlpha * LAMP_DAY * (1 - starFade * 0.7) * (1 + moonGlow * 0.15) * lampBright;
+  const lx = lampX + lampDX, ly = lampY + lampDY;
+  const cr = lampR * 0.18;
+  const grd = ctx.createRadialGradient(lx, ly, 0, lx, ly, cr);
+  grd.addColorStop(0,   `rgba(255,255,255,${(0.95 * g).toFixed(3)})`);
+  grd.addColorStop(0.5, `rgba(246,251,255,${(0.45 * g * breath).toFixed(3)})`);
+  grd.addColorStop(1,   'rgba(244,250,255,0)');
+  ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(lx, ly, cr, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(lx, ly, 1.9, 0, Math.PI*2);
+  ctx.fillStyle = `rgba(255,255,255,${g.toFixed(3)})`; ctx.fill();
 }
 
 // ============================================================
@@ -1235,13 +1374,14 @@ function startBirthdayMoon() {
   }
 }
 function drawMoon() {
-  if (!moonActive) return;
+  if (!moonActive) { moonGlow = 0; return; }
   const t = (performance.now() - moonT0) / 180000;          // 3 分钟
-  if (t >= 1) { moonActive = false; return; }
+  if (t >= 1) { moonActive = false; moonGlow = 0; return; }
   const x = W * (0.12 + 0.76 * t);
   const y = H * (1.02 - 0.82 * Math.sin(Math.PI * t));      // 抛物线升落
   const R = Math.min(W, H) * 0.042;
   const a = Math.sin(Math.PI * t);                          // 升起→落下，淡入淡出
+  moonGlow = a;                                             // 灯会因这位一年一访的客人烧旺一点
   if (!moonCanvas) moonCanvas = document.createElement('canvas');
   const size = Math.max(2, Math.ceil(R * 3));
   moonCanvas.width = size; moonCanvas.height = size;
@@ -1436,12 +1576,16 @@ function animate() {
 
   updateLife();      // 呼吸 / 困倦 / 睡着 → lifeFactor
   updateSunrise();   // 第100夜日出序列推进
+  updateLamp();      // 长明的举止：迎向鼠标 / 久别晃一下 / 越闲越显 / 越烧越稳
 
   // 揭幕 / 黑暗颗粒透明度推进（缓动，约一次呼吸的尺度）
   const bgTarget = (introState >= St.SPREAD)     ? 1 : 0;
   bgRevealAlpha += (bgTarget - bgRevealAlpha) * 0.012;
   const grTarget = (introState <= St.FIRST_STAR) ? 1 : 0;
   grainAlpha    += (grTarget - grainAlpha) * 0.02;
+  // 长明先于星野亮起：FIRST_STAR 起就缓缓淡入（黑暗中最先浮现的永远是它）
+  const lampTarget = (introState >= St.FIRST_STAR) ? 1 : 0;
+  lampAlpha += (lampTarget - lampAlpha) * 0.02;
 
   drawBackground(elapsed);
   drawGrain(elapsed);
@@ -1453,6 +1597,11 @@ function animate() {
     recordTrace();
     const nowMs = performance.now();
     if (nowMs - traceSaveT > 8000) { saveTrace(); traceSaveT = nowMs; }
+    // 长明的脉动：每隔一两到三四分钟，无声荡出一圈光环（复用涟漪系统：星被波前扫过暗一下再亮）
+    if (nowMs > lampPulseTimer) {
+      ripples.push({ cx: lampX, cy: lampY, born: nowMs });
+      lampPulseTimer = nowMs + 90000 + Math.random() * 150000;
+    }
     drawMeteors();
     updateMouseHistory();
     drawMouseTrail();
@@ -1462,6 +1611,7 @@ function animate() {
   // drawLines();        // 星野不自动连线；「连星成座」留待第3步
   particles.forEach(p=>{ p.update(elapsed); p.draw(elapsed); });
   drawBloom();           // 柔光：粒子的弥散辉光
+  drawLampCore(elapsed); // 长明：核（最亮、最定的一点白，绘于粒子之上）
   // updateDrawOrbit();  // 心形星环（旧设计），已停用
   drawShockwaves();
   drawTouchBeam();
