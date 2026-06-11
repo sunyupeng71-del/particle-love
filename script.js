@@ -29,7 +29,8 @@ const DBG = {
 };
 function lsGet(k, d){ try { const v = localStorage.getItem(k); return v === null ? d : v; } catch(e){ return d; } }
 function lsSet(k, v){ try { localStorage.setItem(k, v); } catch(e){} }
-if (DBG.fresh) { try { Object.values(LS).forEach(k => localStorage.removeItem(k)); } catch(e){} }
+// ?fresh=1：彻底清零所有记忆（访问/痕迹/星座/暖星/日出等全部 fx_ 键）
+if (DBG.fresh) { try { Object.keys(localStorage).filter(k => k.startsWith('fx_')).forEach(k => localStorage.removeItem(k)); } catch(e){} }
 
 // —— 访问计数：真实到访才 +1 并写入；调试指定夜数时不写入，方便反复预览 ——
 const _rawVisits = parseInt(lsGet(LS.visits, '0'), 10) || 0;
@@ -67,16 +68,8 @@ const tScale = Math.max(0.45, 1 - (visitCount - 1) * 0.06);
 console.info(`[宇宙] 第 ${visitCount} 夜 · 时辰 ${hour}:00 · 黎明进度 ${(dawnProgress*100).toFixed(0)}%`,
              `\n调试：?night=N ?hour=H ?bday=1 ?fresh=1`);
 
-// ============================================================
-// 音频钩子（占位）—— 真正的 Web Audio / Tone.js 合成在第5步实现
-// ============================================================
-let audioUnlocked = false;
-function unlockAudio(){
-  if (audioUnlocked) return;
-  audioUnlocked = true;
-  audioOnFirstGesture();   // Tone 已就绪则启动；否则加载完成后自动启动
-}
-// 真正的音频实现见文件底部「音频系统」（Tone.js + 原生 Web Audio）。
+// 声音由「轻触苏醒」门控：她第一次点击/触摸之前，绝不发声、绝不创建 AudioContext、绝不加载 Tone.js。
+// 真正的实现见文件底部「音频系统」与「轻触苏醒」。
 
 // ---- 音频状态（HTML5 Audio 本地文件版）-----------------------
 let soundEnabled     = false;
@@ -162,12 +155,13 @@ const BLOOM_SCALE = 0.5;   // 半分辨率，省性能
 let fxCanvas = null, fxCtx = null, meteorLayerDirty = false;
 
 // ---- 时辰主题（凌晨/清晨/昼/黄昏/夜）-----------------------
+// solid = 每帧重铺的实色夜幕（按时辰）；不再用半透明拖尾，避免残影长期累积
 function getTimeTheme(h) {
-  if (h >= 0  && h < 5)  return { trail:'rgba(5,5,13,0.20)',   starMul:1.15, edge:null,                                  watch:true  };
-  if (h >= 5  && h < 9)  return { trail:'rgba(10,9,20,0.20)',  starMul:0.90, edge:{r:120,g:90,b:160,a:0.05,pos:'top'},    watch:false };
-  if (h >= 9  && h < 17) return { trail:'rgba(14,15,28,0.22)', starMul:0.62, edge:null,                                  watch:false };
-  if (h >= 17 && h < 20) return { trail:'rgba(12,8,16,0.20)',  starMul:0.85, edge:{r:200,g:120,b:70,a:0.06,pos:'bottom'}, watch:false };
-  return                        { trail:'rgba(7,7,16,0.20)',   starMul:1.00, edge:null,                                  watch:(h>=22) };
+  if (h >= 0  && h < 5)  return { solid:'rgb(5,5,13)',   starMul:1.15, edge:null,                                  watch:true  };
+  if (h >= 5  && h < 9)  return { solid:'rgb(10,9,20)',  starMul:0.90, edge:{r:120,g:90,b:160,a:0.05,pos:'top'},    watch:false };
+  if (h >= 9  && h < 17) return { solid:'rgb(14,15,28)', starMul:0.62, edge:null,                                  watch:false };
+  if (h >= 17 && h < 20) return { solid:'rgb(12,8,16)',  starMul:0.85, edge:{r:200,g:120,b:70,a:0.06,pos:'bottom'}, watch:false };
+  return                        { solid:'rgb(7,7,16)',   starMul:1.00, edge:null,                                  watch:(h>=22) };
 }
 const TT = getTimeTheme(hour);
 
@@ -810,6 +804,7 @@ function positionFirstStar() {
   fs.x = fs.tx = firstStarPos.x;
   fs.y = fs.ty = firstStarPos.y;
   fs.visTarget = 1;
+  playHerNote();   // 她的专属音随第一颗星响起（若 Tone 已就绪）
 }
 
 // 阶段2：星野渗透 —— 粒子由中心向外扩散、错峰点亮
@@ -948,9 +943,8 @@ function drawGrain(elapsed) {
   }
 }
 
-// 首次交互：解锁声音 + 推进开场（触碰才有第一个声音）
+// 开场中再次触碰：推进开场（声音已在「轻触苏醒」时启动，这里只管推进）
 function onFirstGesture() {
-  unlockAudio();
   if (introState === St.FIRST_STAR) advanceToSpread();
 }
 
@@ -1144,9 +1138,11 @@ function drawMouseTrail() {
 // 二十三、背景渲染
 // ============================================================
 function drawBackground(elapsed) {
-  // 深空拖尾遮罩，颜色随时辰；DARK 阶段更接近纯黑
-  ctx.fillStyle = TT.trail;
-  ctx.fillRect(0,0,W,H);
+  // 每帧彻底清空整个画布，再铺一层实色夜幕（颜色随时辰）。
+  // 不再用半透明拖尾 —— 这样连线、流星、运动残影都只属于当前帧，绝不长期累积。
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = TT.solid;
+  ctx.fillRect(0, 0, W, H);
 
   if (bgRevealAlpha > 0.01) {
     const m = bgRevealAlpha * lifeFactor;
@@ -1565,7 +1561,7 @@ document.addEventListener('visibilitychange', ()=>{
 // 音频系统（Tone.js 合成钢琴/和弦 + 原生 Web Audio 低频 drone / 叮）
 // 零外部音频文件、零循环 BGM；声音由「她的第一次触碰」解锁。
 // ============================================================
-let toneReady = false, audioStarted = false, audioMuted = false, herNotePlayed = false;
+let audioStarted = false, audioMuted = false, herNotePlayed = false;
 let actx = null, synth = null, reverb = null, masterVol = null;
 let droneOsc = null, droneGain = null, droneFilter = null;
 let ambientTimer = null;
@@ -1576,55 +1572,71 @@ const HER_NOTE = 'A4';   // 她的专属音（开场反复出现；也在五声�
 function unlockedNoteCount(){ return Math.max(3, Math.min(PENTA.length, 3 + Math.floor(visitCount / 10))); }
 function unlockedPool(){ return PENTA.slice(0, unlockedNoteCount()); }
 
-// 动态注入 Tone.js（CDN）——页面加载即预取，等她第一次触碰时多半已就绪
-function loadTone(){
-  if (window.Tone) { toneReady = true; return; }
+// 动态注入 Tone.js（CDN）——只在「轻触苏醒」之后才加载，点击前绝不引入
+let toneLoading = false;
+function loadTone(onReady){
+  if (window.Tone) { if (onReady) onReady(); return; }
+  if (toneLoading) return;
+  toneLoading = true;
   const s = document.createElement('script');
   s.src = 'https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js';
   s.async = true;
-  s.onload  = () => { toneReady = true; if (audioUnlocked && !audioStarted) startAudio(); };
-  s.onerror = () => { toneReady = false; };
+  s.onload  = () => { if (onReady) onReady(); };
+  s.onerror = () => {};
   document.head.appendChild(s);
 }
-loadTone();
 
-// 首次触碰：若 Tone 就绪则启动音频（否则 onload 时自动补启动）
-function audioOnFirstGesture(){ if (!audioStarted && toneReady) startAudio(); }
-
-async function startAudio(){
-  if (audioStarted || !window.Tone) return;
+// 启动所有声音引擎。必须在真实手势（pointerdown/touch/click）的同步调用栈内执行——
+// 这样 new AudioContext() 才会被允许进入 running 状态（mousemove 不算有效手势，是旧版失败的根因）。
+function startAudioNow(){
+  if (audioStarted) return;
   audioStarted = true;
+  // 1) 原生 Web Audio：自建上下文 + 低频 drone（即时，不依赖 Tone；离线也能响）
   try {
-    await Tone.start();
-    actx = Tone.getContext().rawContext;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    actx = new AC();
+    if (actx.state === 'suspended' && actx.resume) actx.resume();
+    buildDrone();
+  } catch(e) { actx = null; }
+  // 2) Tone.js：加载完成后建钢琴/和弦（用 Tone 自身的上下文；此时页面已有用户激活，可正常发声）
+  loadTone(() => {
+    if (typeof window.Tone === 'undefined') return;
+    try {
+      Tone.start();
+      buildSynth();
+      playHerNote();              // 若已到第一颗星则此刻响；否则由 positionFirstStar 触发
+      startAmbientPiano();
+      if (isAsleep) setSleepState(true);
+    } catch(e) {}
+  });
+  if (musicBtn) { musicBtn.style.color = 'rgba(200,215,255,0.8)'; musicBtn.style.borderColor = 'rgba(200,215,255,0.4)'; }
+}
 
-    // Tone：钢琴单音 + 终曲和弦（柔和正弦 + 长混响）
-    masterVol = new Tone.Volume(-11).toDestination();
-    reverb    = new Tone.Reverb({ decay: 7, wet: 0.5 }).connect(masterVol);
-    synth     = new Tone.PolySynth(Tone.Synth).connect(reverb);
-    synth.set({
-      oscillator: { type: 'sine' },
-      envelope:   { attack: 0.04, decay: 0.7, sustain: 0.05, release: 3.6 },
-      volume: -9,
-    });
+// 原生 Web Audio：40-50Hz 低频 drone + 缓慢 LFO 起伏（自建上下文 actx）
+function buildDrone(){
+  if (!actx || droneOsc) return;
+  droneGain   = actx.createGain();   droneGain.gain.value = 0;
+  droneFilter = actx.createBiquadFilter(); droneFilter.type = 'lowpass'; droneFilter.frequency.value = 120;
+  droneOsc    = actx.createOscillator(); droneOsc.type = 'sine'; droneOsc.frequency.value = 44;
+  const lfo     = actx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.08; // ~12s
+  const lfoGain = actx.createGain(); lfoGain.gain.value = 0.018;
+  lfo.connect(lfoGain); lfoGain.connect(droneGain.gain);
+  droneOsc.connect(droneFilter); droneFilter.connect(droneGain); droneGain.connect(actx.destination);
+  droneOsc.start(); lfo.start();
+  droneGain.gain.setTargetAtTime(0.05, actx.currentTime, 3);   // 缓缓淡入
+}
 
-    // 原生 Web Audio：40-50Hz 低频 drone + 缓慢 LFO 起伏
-    droneGain   = actx.createGain();   droneGain.gain.value = 0;
-    droneFilter = actx.createBiquadFilter(); droneFilter.type = 'lowpass'; droneFilter.frequency.value = 120;
-    droneOsc    = actx.createOscillator(); droneOsc.type = 'sine'; droneOsc.frequency.value = 44;
-    const lfo     = actx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.08; // ~12s
-    const lfoGain = actx.createGain(); lfoGain.gain.value = 0.018;
-    lfo.connect(lfoGain); lfoGain.connect(droneGain.gain);
-    droneOsc.connect(droneFilter); droneFilter.connect(droneGain); droneGain.connect(actx.destination);
-    droneOsc.start(); lfo.start();
-    droneGain.gain.setTargetAtTime(0.05, actx.currentTime, 3);   // 缓缓淡入
-
-    if (musicBtn) { musicBtn.style.color = 'rgba(200,215,255,0.8)'; musicBtn.style.borderColor = 'rgba(200,215,255,0.4)'; }
-
-    playHerNote();          // 她的专属音（首次触碰）
-    startAmbientPiano();
-    if (isAsleep) setSleepState(true);
-  } catch(e) { audioStarted = false; }
+// Tone.js：柔和正弦钢琴 + 长混响（用 Tone 自身的上下文）
+function buildSynth(){
+  if (synth || typeof window.Tone === 'undefined') return;
+  masterVol = new Tone.Volume(-11).toDestination();
+  reverb    = new Tone.Reverb({ decay: 7, wet: 0.5 }).connect(masterVol);
+  synth     = new Tone.PolySynth(Tone.Synth).connect(reverb);
+  synth.set({
+    oscillator: { type: 'sine' },
+    envelope:   { attack: 0.04, decay: 0.7, sustain: 0.05, release: 3.6 },
+    volume: -9,
+  });
 }
 
 // 她的专属单音（每次会话只在开场响一次；之后作为五声之一在环境里复现）
@@ -1633,9 +1645,6 @@ function playHerNote(){
   herNotePlayed = true;
   synth.triggerAttackRelease(HER_NOTE, 2.4, undefined, 0.55);
 }
-
-// drone 在 startAudio 内启动；保留空函数以兼容旧调用点
-function startDrone(){}
 
 // 睡着：低鸣变深、钢琴停；醒来：恢复
 function setSleepState(asleep){
@@ -1724,8 +1733,49 @@ function toggleMusic(){
 }
 
 // ============================================================
+// 轻触苏醒（声音解锁门）
+// ============================================================
+// 入场动画开始前，屏幕中央显示一行极小的字。她第一次点击/触摸之前：
+// 不发声、不创建 AudioContext、不加载 Tone.js。
+let wakeHintEl = null, universeWoken = false;
+
+function showWakeHint() {
+  wakeHintEl = document.createElement('div');
+  wakeHintEl.textContent = '轻触屏幕，让宇宙苏醒';
+  wakeHintEl.style.cssText =
+    'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);' +
+    'font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","微软雅黑",system-ui,-apple-system,"Segoe UI",sans-serif;' +
+    'font-weight:200;font-size:clamp(12px,2.6vw,16px);letter-spacing:0.3em;' +
+    'color:rgba(255,255,255,0.5);white-space:nowrap;pointer-events:none;' +
+    'z-index:50;opacity:0;transition:opacity 2s ease;text-shadow:none;';
+  document.body.appendChild(wakeHintEl);
+  // 柔和淡入
+  requestAnimationFrame(() => requestAnimationFrame(() => { if (wakeHintEl) wakeHintEl.style.opacity = '1'; }));
+}
+
+function wakeUniverse() {
+  if (universeWoken) return;
+  universeWoken = true;
+  // 1) 文字缓慢淡出
+  if (wakeHintEl) {
+    wakeHintEl.style.transition = 'opacity 1.6s ease';
+    wakeHintEl.style.opacity = '0';
+    setTimeout(() => { if (wakeHintEl) { wakeHintEl.remove(); wakeHintEl = null; } }, 1700);
+  }
+  // 2) 同时启动所有声音引擎（在手势同步栈内创建 AudioContext）
+  startAudioNow();
+  // 3) 然后正式开始入场动画（1.8s 黑暗倒计时）
+  startIntro();
+}
+
+// ============================================================
 // 二十九、启动
 // ============================================================
 init();
 animate();
-startIntro();
+showWakeHint();   // 先显示「轻触屏幕，让宇宙苏醒」，等她第一次触碰再开始
+
+// 真实手势才解锁（pointerdown 覆盖鼠标/触摸/触控笔；另加 touchstart/mousedown/keydown 兜底）。
+// 注意：故意不监听 mousemove —— 它不是有效的用户激活手势，正是旧版声音启动失败的原因。
+['pointerdown', 'touchstart', 'mousedown', 'keydown'].forEach(ev =>
+  window.addEventListener(ev, wakeUniverse, { passive: true }));
