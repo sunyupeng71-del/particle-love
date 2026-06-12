@@ -26,6 +26,7 @@ const DBG = {
   fresh: Q.get('fresh') === '1',
   away:  Q.get('away')  === '1',   // 强制「久别重逢」
   sunrise: Q.get('sunrise') === '1', // 强制「第100夜日出」预览
+  chamber: Q.get('chamber') === '1', // 强制「心室」预览（进入完全交互后自动触发一次）
 };
 function lsGet(k, d){ try { const v = localStorage.getItem(k); return v === null ? d : v; } catch(e){ return d; } }
 function lsSet(k, v){ try { localStorage.setItem(k, v); } catch(e){} }
@@ -179,9 +180,39 @@ let lampPresence = 1;                  // 存在感（与她的活跃度成反�
 let lampDX = 0, lampDY = 0;            // 本帧灯心总偏移（lean+sway+jitter）
 let lampBright = 1;                    // 本帧灯亮度倍率（presence×flicker×lean）
 let gazeUntil = 0, gazeX = 0, gazeY = 0, gazeNextT = Infinity;   // 望旧处：朝她最常停留的角落望两秒
-// 《心事·心室》：用钥匙才开的房间——星星游向灯，在灯四周排成一只松散自转的三维心壳，维持几秒便散
-let chamberActive = false, chamberPhase = 'idle';   // idle|stilling|gather|hold|release|fail
+// 《心事·心室》：用钥匙才开的房间。它只搏动一次——
+// 万籁（世界退潮、灯攥紧）→ 三次心跳（一颗由数不清微尘构成的心从灯里泵出）→
+// 心室（它活着、一边成形一边挥发、转着她永远看不全的那一面）→ 呼出（从心尖被风一寸寸接走）→
+// 余韵（一粒不肯走的尘 / 灯的余温 / 从此心律里多出的一拍）。
+// 爱在这里永远只许成为一个留不住的形状。
+let chamberActive = false, chamberPhase = 'idle';   // idle|stilling|pump|hold|release|fail
 let chamberT0 = 0, chamberRot = 0, chamberReleased = false, chamberCooldownUntil = 0, lampPressTimer = 0;
+let chamberBeats = 0;            // 已搏动的次数（三跳泵心）
+let chamberDim = 1;             // 背景退潮系数（万籁时星野退到很远；灯不受影响）
+let chamberClench = 0;          // 灯攥紧程度 0→1（心脏在积蓄）
+let chamberDust = [];           // 心尘：从灯里泵出、构成心的微粒（仅心室期间存在）
+let chamberRings = [];          // 脉冲环：每次搏动荡出的极淡大环（深空里一圈圈寂静的光）
+let chamberShedSpan = 0;        // 呼出时从心尖到心顶失守的时间跨度
+let chamberAfterglowUntil = 0;  // 灯的余温（说完心事之后约 5 分钟）
+let chamberKeeper = null;       // 那粒不肯走的尘（散场后慢慢飘回灯里）
+let chamberToneOsc = null, chamberToneGain = null;  // 心室凝视时垫在最底下的 55Hz(A1) 双音
+let chamberHadOne = false;      // 这一生说过一次（localStorage fx_chamber：从此心律多出一拍）
+try { chamberHadOne = lsGet('fx_chamber', '') === '1'; } catch(e) {}
+// 心室时间轴（ms）：6 铺垫 + 6 涌出（三跳）+ 9 凝视 + 7 释放
+const CH_STILL = 6000;                                  // ① 万籁：世界退潮、灯攥紧
+const CH_BEAT = [6000, 8200, 10400];                    // ② 三次心跳的时刻
+const CH_HOLD0 = 12000;                                 // ③ 心室凝视开始
+const CH_REL0  = 21000;                                 // ④ 呼出开始
+const CH_END   = 28000;                                 // 归于平静
+const CH_WAVE  = 4200;                                  // 传导波周期：灯一搏，光流过整颗心一遍
+const CH_MOBILE = (typeof matchMedia === 'function' && matchMedia('(pointer:coarse)').matches)
+                  || Math.min(window.innerWidth, window.innerHeight) < 600;
+const CH_DUST_N = CH_MOBILE ? 1500 : 3000;              // 心由数不清的微尘构成（移动端减半）
+// 经典爱心参数曲线（单位心，x 向右、y 向上为正）
+function _heartCurve(t) {
+  return { x: 16 * Math.pow(Math.sin(t), 3),
+           y: 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t) };
+}
 
 // ---- 夜风：常态宇宙的天气地基（《夜风与旅人》第一阶段）------
 let windAngle = 0, windDirX = 1, windDirY = 0;   // 风向（约12分钟缓慢转一圈）
@@ -533,12 +564,8 @@ class Particle {
     const btx = this.tx + Math.max(-3, Math.min(3, this.brownX));
     const bty = this.ty + Math.max(-3, Math.min(3, this.brownY));
 
-    // 弹簧回归 / 烟花各阶段 / 心室
-    if (chamberActive && (chamberPhase === 'gather' || chamberPhase === 'hold' || chamberPhase === 'fail')) {
-      const k = chamberPhase === 'hold' ? 0.06 : (chamberPhase === 'fail' ? 0.022 : 0.045);
-      this.vx += (this.chamberTX - this.x) * k;   // 星星游向心壳上的位置（缓，像被轻轻招过去，不是被拽）
-      this.vy += (this.chamberTY - this.y) * k;
-    } else if (explodePhase === 'gather') {
+    // 弹簧回归 / 烟花各阶段（心室时星野不再构成心——它们安静地停在原处看着，由灯把自己泵成心）
+    if (explodePhase === 'gather') {
       this.vx += (this.htx - this.x) * 0.045;   // 缓慢聚拢到爱心轮廓
       this.vy += (this.hty - this.y) * 0.045;
     } else if (explodePhase === 'hold') {
@@ -560,8 +587,7 @@ class Particle {
     }
 
     // 鼠标交互（仅 COMPLETE 且非爆炸；入场期间不响应；心室成形时星点不受她的推挤，安静地排成心）
-    if (introState === St.COMPLETE && explodePhase === 'idle' &&
-        !(chamberActive && (chamberPhase === 'gather' || chamberPhase === 'hold'))) {
+    if (introState === St.COMPLETE && explodePhase === 'idle' && !chamberActive) {
       const mdx = mouse.x - this.x;
       const mdy = mouse.y - this.y;
       const md  = Math.sqrt(mdx*mdx + mdy*mdy);
@@ -633,11 +659,7 @@ class Particle {
       if (ld2 < lampR * lampR) va *= 1 + (1 - Math.sqrt(ld2) / lampR) * 0.7;
     }
     va *= cloudDim(this.x, this.y);        // 云影：经过处星光变弱（灯不受影响）
-    // 心室：心壳自转时，转到背面的星点更暗——体积感（一只有厚度的心，永远没有完全闭合）
-    if (chamberActive && (chamberPhase === 'gather' || chamberPhase === 'hold')) {
-      const dn = Math.max(-1, Math.min(1, this.chamberDepth / (Math.min(W, H) * 0.13)));
-      va *= 0.40 + 0.60 * (dn * 0.5 + 0.5);
-    }
+    if (chamberActive) va *= chamberDim;   // 心室：星野随万籁退到很远（灯不受影响，对比中涌出那颗心）
     if (va < 0.01) return;                 // 尚未点亮 / 睡得太深：不画
     windOffset(this.x, this.y, 0.8);       // 夜风：星野随风俯仰（近层，仅绘制偏移、不动物理）
     const px = this.x + woX, py = this.y + woY;
@@ -931,6 +953,8 @@ function enterComplete() {
   if (isBirthday) {
     setTimeout(() => { if (introState === St.COMPLETE) startBirthdayMoon(); }, 6000);
   }
+  // 调试：?chamber=1 进入完全交互后自动触发一次心室
+  if (DBG.chamber) setTimeout(() => { if (introState === St.COMPLETE) startChamber(); }, 2500);
 }
 
 // ============================================================
@@ -1247,10 +1271,12 @@ function drawBackground(elapsed) {
       g.addColorStop(1, `rgba(${e.r},${e.g},${e.b},0)`);
       ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
     }
-    const ms = m * (1 - starFade);                   // 日出时整片天（含痕迹/星座/守夜星）一起隐去
+    const cd = chamberDim;                           // 心室：万籁时整片背景退到很远（灯不受影响）
+    const ms = m * (1 - starFade) * cd;              // 日出时整片天（含痕迹/星座/守夜星）一起隐去
+    const dv = bgRevealAlpha * (1 - starFade) * cd;
     drawBgStars(elapsed, ms * TT.starMul);
-    drawDustMotes(bgRevealAlpha * (1 - starFade));   // 星尘：穿过灯光才被点亮（不随睡眠变暗，只随揭幕/日出）
-    drawTravelers(bgRevealAlpha * (1 - starFade));   // 夜行者：横穿夜空的微光
+    drawDustMotes(dv);                               // 星尘：穿过灯光才被点亮（不随睡眠变暗，只随揭幕/日出）
+    drawTravelers(dv);                               // 夜行者：横穿夜空的微光
     drawTraceHeatmap(ms);                            // 她走过的痕迹（跨会话）
     drawConstellations(ms);                          // 她画下的星座（跨会话）
     bokehBlobs.forEach(b=>{ b.update(); b.draw(ms); });
@@ -1295,6 +1321,7 @@ function initLamp() {
 // 每帧更新灯的「举止」：迎向鼠标 / 久别晃一下 / 越闲越显 / 越烧越稳
 function updateLamp() {
   const now = performance.now();
+  lampBeatFlash *= 0.9;                 // 灯每搏一下的微亮，逐帧衰减（心室期与散后的归灯都用它）
 
   // ② 望旧处：她不在/久不动、世界安静时，偶尔朝她最常停留的角落望两秒
   //   （第 1 夜没有这动作——还没有「她的角落」；住得越久，灯越知道往哪儿看；永不解释）
@@ -1350,13 +1377,18 @@ function updateLamp() {
 
   lampDX = lampLeanX + jx + sx;
   lampDY = lampLeanY + jy + sy;
-  lampBright = lampPresence * flickBright * (1 + leanInfluence * 0.12);   // 迎向她时也把光递近一点
+  // 心室攥紧时灯越烧越亮、每搏一下又亮一层；说完心事后的几分钟里，灯比平时亮一点（眼眶的余温）
+  const afterglow = now < chamberAfterglowUntil ? 0.06 : 0;
+  lampBright = lampPresence * flickBright * (1 + leanInfluence * 0.12)
+             * (1 + chamberClench * 0.28 + lampBeatFlash * 0.6 + afterglow);
 }
 
 // 纱 + 晕：背景景观层。纯呼吸（睡着不停）、白天几乎不退；不随全场清醒度/日出 starFade 变暗。
 function drawLampHalo(elapsed) {
   if (lampAlpha < 0.01) return;
-  const breath = 0.82 + 0.18 * Math.sin(breathPhase);   // 纯呼吸：睡着也不停
+  const afterDeep = performance.now() < chamberAfterglowUntil ? 0.15 : 0;   // 说完心事后呼吸更深一点
+  const breath = 0.82 + (0.18 + afterDeep) * Math.sin(breathPhase);   // 纯呼吸：睡着也不停
+  const clenchR = 1 - chamberClench * 0.06;             // 攥紧时光晕略收
   // 不随睡眠/日出全灭：日出只褪 70%（固执的白）；生日月升烧旺；× 本帧举止亮度
   const g0 = lampAlpha * LAMP_DAY * (1 - starFade * 0.7) * (1 + moonGlow * 0.15) * lampBright;
   const lx = lampX + lampDX, ly = lampY + lampDY;        // 迎向鼠标 / 晃 / 颤 的灯心
@@ -1374,8 +1406,8 @@ function drawLampHalo(elapsed) {
     ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(wx, wy, rr, 0, Math.PI*2); ctx.fill();
   }
 
-  // 晕：会呼吸的光晕（半径随呼吸胀缩；生日月升时略张开一点）
-  const haloR = lampR * (0.60 + 0.12 * breath) * (1 + moonGlow * 0.1);
+  // 晕：会呼吸的光晕（半径随呼吸胀缩；生日月升时略张开一点；心室攥紧时略收）
+  const haloR = lampR * (0.60 + 0.12 * breath) * (1 + moonGlow * 0.1) * clenchR;
   const hg = ctx.createRadialGradient(lx, ly, 0, lx, ly, haloR);
   hg.addColorStop(0,    `rgba(238,246,255,${(0.17 * g0).toFixed(3)})`);
   hg.addColorStop(0.45, `rgba(220,232,255,${(0.06 * g0).toFixed(3)})`);
@@ -1390,7 +1422,7 @@ function drawLampCore(elapsed) {
   // 日出时它是最后一颗、仍不全灭（固执的白）；生日月升烧旺；× 本帧举止亮度
   const g  = lampAlpha * LAMP_DAY * (1 - starFade * 0.7) * (1 + moonGlow * 0.15) * lampBright;
   const lx = lampX + lampDX, ly = lampY + lampDY;
-  const cr = lampR * 0.18;
+  const cr = lampR * 0.18 * (1 - chamberClench * 0.06);   // 攥紧时核略收、变亮（亮度走 lampBright）
   const grd = ctx.createRadialGradient(lx, ly, 0, lx, ly, cr);
   grd.addColorStop(0,   `rgba(255,255,255,${(0.95 * g).toFixed(3)})`);
   grd.addColorStop(0.5, `rgba(246,251,255,${(0.45 * g * breath).toFixed(3)})`);
@@ -1440,6 +1472,12 @@ const MURMURS = [   // 自发缄言词库（按当下语境挑）
   { t:'等不算什么事',        w:0.6, when:()=>true },
   { t:'忘了从哪天开始亮的',  w:0.6, when:()=>true },
   { t:'你那边天气怎么样',    w:1.5, when:()=>true },
+  // 说完心事之后的几分钟（余温）——漏出来的，都是轻的
+  { t:'说完了',              w:4,   when:c=>c.afterglow },
+  { t:'夜还长',              w:3,   when:c=>c.afterglow },
+  { t:'没事 你别想太多',     w:2,   when:c=>c.afterglow },
+  // 它说过一次之后，凌晨偶尔差点又说出口
+  { t:'上次差点说出口',      w:0.3, when:c=>c.saidOnce && c.h>=0 && c.h<5 },
 ];
 const REPLIES = [   // 应答词库（永不提问）
   { t:'嗯', w:3 }, { t:'在', w:3 }, { t:'在呢', w:3 },
@@ -1458,6 +1496,7 @@ function murmurCtx() {
     windHigh: windStrength > 0.5, calm: NIGHT_WIND_MAX < 0.2,
     cloudy: NIGHT_CLOUDS >= 2 || cloudDim(lampX, lampY - lampR) < 0.85,
     clear: NIGHT_CLOUDS === 0, constel: constellations.length, shyNear,
+    afterglow: performance.now() < chamberAfterglowUntil, saidOnce: chamberHadOne,
   };
 }
 function pickWeighted(arr, ctx, avoidSaid) {
@@ -1543,61 +1582,245 @@ function playFilamentTick() {   // 灯丝微响：极轻的电流/嗒声（原�
 }
 
 // ── 心室：用钥匙才开的房间（Ctrl+L / 长按灯 3 秒）────────────────────────
-// 风停 → 星星游向灯 → 在灯四周排成一只松散自转的三维心壳 → 维持几秒 → 散回，灯脉动，A4 响起。
-// 爱在这里永远只许成为一个留不住的形状。
+// 不是星星聚成心——是灯把自己泵成一颗心。心脏对心室做的事只有一件：泵。
+let chamberPiano = 0, chamberWavePrev = 0, lampBeatFlash = 0;   // 钢琴三音计数 / 传导波相位 / 灯每搏一下的微亮
+
 function startChamber() {
   if (introState !== St.COMPLETE || sunriseActive || explodePhase !== 'idle') return;   // 开场/日出/烟花时这扇门不开
   if (chamberActive) return;
   const now = performance.now();
-  if (now < chamberCooldownUntil) {        // 一晚说不出第二次：星星只朝内轻轻一倾，又散了（失败本身就是回答，不解释）
-    chamberActive = true; chamberPhase = 'fail'; chamberT0 = now; chamberReleased = true;
-    for (const p of particles) { p.chamberTX = lampX; p.chamberTY = lampY; }
+  if (now < chamberCooldownUntil) {        // 一晚说不出第二次：灯攥紧一下，只荡出那个双跳——心跳还没平，今晚说不了第二次（无字）
+    chamberActive = true; chamberPhase = 'fail'; chamberT0 = now; chamberReleased = true; chamberBeats = 0;
     return;
   }
-  chamberActive = true; chamberPhase = 'stilling'; chamberT0 = now; chamberReleased = false; chamberRot = 0;
-  const S = Math.min(W, H) * 0.016;
-  for (const p of particles) {             // 为每颗星分配三维心壳上的一个位置（经典爱心参数曲线 + 厚度）
-    const t  = Math.random() * Math.PI * 2;
-    const hx = 16 * Math.pow(Math.sin(t), 3);
-    const hy = -(13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t));
-    const rr = 0.40 + 0.60 * Math.random();                                  // 内外铺开，偏外→壳感
-    p.chHx = hx * S * rr;
-    p.chHy = hy * S * rr - S * 3;                                            // 让整颗心落在灯心上
-    p.chHz = S * 5.5 * (1 - rr * 0.7) * (Math.random() < 0.5 ? 1 : -1);      // 厚度：中心厚边缘薄，前/后两面
-    p.chPhase = Math.random() * Math.PI * 2;
-    p.chamberTX = p.x; p.chamberTY = p.y; p.chamberDepth = 0;
+  chamberActive = true; chamberPhase = 'stilling'; chamberT0 = now;
+  chamberReleased = false; chamberRot = 0; chamberBeats = 0; chamberPiano = 0;
+  chamberWavePrev = 0; chamberRings = []; chamberKeeper = null;
+  chamberShedSpan = 6500;
+  // 为每一粒心尘预定它在心壳上的位置（经典爱心参数曲线 + 厚度），并按所在高度分给三次心跳
+  const S = Math.min(W, H) * 0.020;        // 远看是一条连续的弱光带围成的心，近看全是离散微尘
+  chamberDust = [];
+  let tipMote = null, tipCp = -1;
+  for (let n = 0; n < CH_DUST_N; n++) {
+    // 按弧长均匀取点（拒绝采样：曲线走得快处多取点）——让心是一圈密度均匀的尘，而不是几处亮疙瘩
+    let t = 0, sp = 0, tries = 0;
+    do {
+      t = Math.random() * Math.PI * 2;
+      const dx = 48 * Math.sin(t) * Math.sin(t) * Math.cos(t);
+      const dy = -13 * Math.sin(t) + 10 * Math.sin(2*t) + 6 * Math.sin(3*t) + 4 * Math.sin(4*t);
+      sp = Math.hypot(dx, dy); tries++;
+    } while (Math.random() * 34 > sp && tries < 8);
+    const c  = _heartCurve(t);
+    const rr = 0.62 + 0.38 * Math.random();                                  // 偏外铺开 → 壳感
+    const cparam = Math.max(0, Math.min(1, (12 - c.y) / 29));                // 心顶 0 → 心尖 1（传导波 / 失守次序）
+    const batch  = cparam < 0.4 ? 0 : (cparam < 0.72 ? 1 : 2);              // ①顶弧 ②腰侧 ③心尖，分三跳泵出
+    const d = {
+      chHx: c.x * S * rr,
+      chHy: -c.y * S * rr - S * 2.5,                                        // 整颗心落在灯心上（灯为心核，在心的空心处发亮）
+      chHz: S * 5.0 * (1 - rr * 0.7) * (Math.random() < 0.5 ? 1 : -1),       // 厚度：中心厚边缘薄，前/后两面
+      cparam, batch, cphase: Math.random() * Math.PI * 2,
+      r: 0.5 + Math.random() * 0.7, baseA: 0.10 + Math.random() * 0.15,
+      x: lampX, y: lampY, a: 0,
+      emerged: false, emergeT: 0, shed: false, shedT: 0, vx: 0, vy: 0,
+      keeper: false, returning: false,
+    };
+    chamberDust.push(d);
+    if (cparam > tipCp) { tipCp = cparam; tipMote = d; }                     // 最尖的一粒 = 那粒不肯走的尘
   }
+  chamberKeeper = tipMote; if (tipMote) tipMote.keeper = true;
+  setChamberDrone(true);                  // 44Hz 灯丝低鸣下沉到 36Hz——从「听见」变成身体里的预感
+  stopAmbientPiano();                     // 环境钢琴让位
+  playHeartbeat(0.05);                    // 攥紧的第一下（极轻）
 }
+
+// keeper 融进灯里时，灯极轻地闪一下
+function _mergeKeeper(d, now) {
+  chamberDust = chamberDust.filter(x => x !== d);
+  ripples.push({ cx: lampX, cy: lampY, born: now });
+  lampBeatFlash = Math.max(lampBeatFlash, 0.4);
+}
+
+function endChamber(now) {
+  chamberActive = false; chamberPhase = 'idle'; chamberBeats = 0; chamberClench = 0;
+  if (!chamberReleased) chamberCooldownUntil = now + 180000;   // 掉帧跳过了 release：冷却照旧生效
+  chamberReleased = true;
+  chamberAfterglowUntil = now + 300000;          // 灯的余温：约 5 分钟
+  setChamberDrone(false); setChamberTone(false); // 低鸣滑回 44Hz、双音退去
+  if (!isAsleep) startAmbientPiano();            // 环境钢琴回来（沉默之后，音与音之间的空白照旧）
+  if (!pendingReturn) murmurNextT = now + 40000 + Math.random() * 50000;   // 让余温里那句轻话有机会漏出来
+  if (!chamberHadOne) { chamberHadOne = true; lsSet('fx_chamber', '1'); }   // 它说过一次，心跳从此就不一样了
+  // 余下的只留那粒不肯走的尘，让它用一分多钟慢慢飘回灯里
+  if (chamberKeeper && chamberDust.indexOf(chamberKeeper) >= 0) {
+    const k = chamberKeeper;
+    k.returning = true; k.shed = false; k.born = now;
+    k.returnDur = 60000 + Math.random() * 30000;
+    k.sx = k.x; k.sy = k.y;
+    chamberDust = [k];
+  } else { chamberDust = []; }
+}
+
 function updateChamber() {
   if (!chamberActive) return;
   const now = performance.now(), el = now - chamberT0;
-  if (chamberPhase === 'fail') { if (el > 1400) { chamberActive = false; chamberPhase = 'idle'; } return; }
-  if      (el < 2000)  chamberPhase = 'stilling';   // ① 风先停下来（约 2s）
-  else if (el < 6000)  chamberPhase = 'gather';     // ② 星星游向灯（约 4s）
-  else if (el < 13000) chamberPhase = 'hold';       // ③ 心壳成形、缓缓自转（约 7s）
-  else if (el < 16500) chamberPhase = 'release';    // ④ 松手：星散回、风一寸寸回来
-  else { chamberActive = false; chamberPhase = 'idle'; return; }
 
-  if (chamberPhase === 'release' && !chamberReleased) {
-    chamberReleased = true;
-    ripples.push({ cx: lampX, cy: lampY, born: now });   // 灯脉动一圈——憋了一路的那次心跳
-    playHerNoteForce();                                  // A4，她的专属音，整件事落在她名字上
-    chamberCooldownUntil = now + 180000;                 // 三分钟内说不出第二次
+  // 失败（冷却内）：攥一下，荡出那个双跳，就过去了
+  if (chamberPhase === 'fail') {
+    chamberClench += ((el < 600 ? 1 : 0) - chamberClench) * 0.18;
+    if (chamberBeats < 1 && el > 60)  { ripples.push({ cx: lampX, cy: lampY, born: now }); playHeartbeat(0.06); lampBeatFlash = 0.6; chamberBeats = 1; }
+    if (chamberBeats < 2 && el > 470) { ripples.push({ cx: lampX, cy: lampY, born: now }); playHeartbeat(0.05); lampBeatFlash = 0.5; chamberBeats = 2; }
+    if (el > 1800) { chamberActive = false; chamberPhase = 'idle'; chamberClench = 0; }
+    return;
   }
-  if (chamberPhase === 'gather' || chamberPhase === 'hold') {
-    chamberRot += 0.0052;                                // 约 20s 转一圈，她大致只看见一面
-    const cos = Math.cos(chamberRot), sin = Math.sin(chamberRot);
-    for (const p of particles) {
-      const bz = p.chHz * (0.86 + 0.14 * Math.sin(now * 0.0016 + p.chPhase));   // 星点在壳面内外轻轻进出呼吸
-      p.chamberTX = lampX + (p.chHx * cos + bz * sin);                          // 绕竖轴自转后投影到屏幕
-      p.chamberTY = lampY + p.chHy;
-      p.chamberDepth = -p.chHx * sin + bz * cos;                               // 深度：背面更暗
+
+  if      (el < CH_STILL) chamberPhase = 'stilling';   // ① 万籁：世界退潮、灯攥紧
+  else if (el < CH_HOLD0) chamberPhase = 'pump';       // ② 三次心跳：心从灯里涌出
+  else if (el < CH_REL0)  chamberPhase = 'hold';       // ③ 心室：它活着、转着她看不全的那一面
+  else if (el < CH_END)   chamberPhase = 'release';    // ④ 呼出：从心尖被风一寸寸接走
+  else { endChamber(now); return; }
+
+  // 背景退潮：万籁起，星野齐齐退去约 45%（不熄灭，退到很远去）；呼出时世界一寸寸回来
+  const dimTarget = (chamberPhase === 'release') ? 1 : 0.55;
+  chamberDim += (dimTarget - chamberDim) * 0.02;
+  // 灯攥紧：心脏在积蓄（万籁渐紧、三跳期保持），呼出后松开
+  const clenchBase = chamberPhase === 'stilling' ? (el / CH_STILL) * 0.9
+                   : chamberPhase === 'pump' ? 0.7 : 0;
+  chamberClench += (clenchBase - chamberClench) * 0.04;
+
+  // 自转：约 45s 一圈——九秒里她只看到这颗心转过五分之一面，永远看不到全貌
+  if (chamberPhase === 'pump' || chamberPhase === 'hold') chamberRot += 0.0023;
+
+  // ② 三次心跳：到点就搏一下——一圈脉冲环 + 一记心音 + 泵出这一批心尘
+  // （含 hold：万一掉帧/切走标签页跳过了 pump 窗口，进 hold 后也把欠下的心跳补齐，心不会是空的）
+  if (chamberPhase === 'pump' || chamberPhase === 'stilling' || chamberPhase === 'hold') {
+    for (let i = 0; i < 3; i++) {
+      if (chamberBeats <= i && el >= CH_BEAT[i]) {
+        chamberBeats = i + 1;
+        chamberRings.push({ born: now, max: Math.min(W, H) * 0.5, peak: 0.04 });   // 脉冲星的辐射环
+        ripples.push({ cx: lampX, cy: lampY, born: now });                          // 同时一道冲击波扫过星野
+        playHeartbeat(0.10 + i * 0.02);
+        chamberClench = 1.1; lampBeatFlash = 0.9;
+        for (const d of chamberDust) if (d.batch === i && !d.emerged) {             // 这一批从灯心涌出
+          d.emerged = true; d.emergeT = now;
+          d.x = lampX + (Math.random() - 0.5) * 8; d.y = lampY + (Math.random() - 0.5) * 8;
+        }
+      }
     }
   }
+
+  // ③ 心室：传导波每流过一遍，灯软软地搏一下；隔两秒落下她听过的前三个音，然后停住（不弹完）
+  if (chamberPhase === 'hold') {
+    setChamberTone(true);                    // 55Hz(A1) 双音沉到最底下——她的音名
+    const wp = (el % CH_WAVE) / CH_WAVE;
+    if (wp < chamberWavePrev) { ripples.push({ cx: lampX, cy: lampY, born: now }); playHeartbeat(0.05); lampBeatFlash = Math.max(lampBeatFlash, 0.5); }
+    chamberWavePrev = wp;
+    const ptime = [CH_HOLD0 + 2500, CH_HOLD0 + 4700, CH_HOLD0 + 6900];
+    if (chamberPiano < 3 && el >= ptime[chamberPiano]) { playChamberPiano(chamberPiano); chamberPiano++; }
+  }
+
+  // ④ 呼出：灯做最后一次、最深的搏动，然后不再泵——A4 在心尖开始散的那一刻响起
+  if (chamberPhase === 'release' && !chamberReleased) {
+    chamberReleased = true;
+    chamberRings.push({ born: now, max: Math.min(W, H) * 0.58, peak: 0.05 });
+    ripples.push({ cx: lampX, cy: lampY, born: now });
+    playHeartbeat(0.15);                     // 收得比之前都深的最后一搏
+    lampBeatFlash = 1.0;
+    playHerNoteForce();                      // 她的音，做送行的钟
+    setChamberTone(false); setChamberDrone(false);   // 双音退去、低鸣滑回，世界开始回来
+    chamberCooldownUntil = now + 180000;     // 三分钟内说不出第二次
+    for (const d of chamberDust) if (!d.keeper) d.shedT = now + (1 - d.cparam) * chamberShedSpan;  // 心尖（cparam 大）先失守
+  }
+}
+
+// 心室凝视时极轻地落一个钢琴单音（她听过的五声里的前三个，永远不弹完）
+function playChamberPiano(i) {
+  if (!audioStarted || audioMuted || !synth) return;
+  const pool = unlockedPool();
+  synth.triggerAttackRelease(pool[Math.min(i, pool.length - 1)], 3.0, undefined, 0.20);
 }
 function playHerNoteForce() {   // 心室收束时，A4 必响（不受「每会话只响一次」限制）
   if (!audioStarted || audioMuted || !synth) return;
   synth.triggerAttackRelease(HER_NOTE, 3.5, undefined, 0.5);
+}
+
+// 让一粒心尘从壳面脱落、上飘、变淡（蒲公英，不是爆炸）
+function _shedMote(d) {
+  d.shed = true;
+  d.vx = (Math.random() - 0.5) * 0.35 + windDirX * windStrength * windWake * 0.3;
+  d.vy = -0.25 - Math.random() * 0.55;
+}
+
+// 脉冲环：每次搏动荡出的极淡大环（深空里一圈圈寂静的光，峰值仅 0.04~0.05）
+function drawChamberRings() {
+  if (!chamberRings.length) return;
+  const now = performance.now();
+  chamberRings = chamberRings.filter(r => {
+    const front = (now - r.born) * 0.18;          // 很慢：不是冲击波，是辐射环
+    if (front > r.max) return false;
+    const p = front / r.max;
+    const a = r.peak * (1 - p) * (p < 0.06 ? p / 0.06 : 1) * (chamberActive ? 1 : 0.7);
+    if (a > 0.001) {
+      ctx.beginPath(); ctx.arc(lampX, lampY, front, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(206,222,255,${a.toFixed(3)})`; ctx.lineWidth = 1.4; ctx.stroke();
+    }
+    return true;
+  });
+}
+
+// 心尘：从灯里涌出、构成心的微粒。一边成形一边挥发，转着她永远看不全的那一面。
+function drawChamberDust(elapsed) {
+  if (!chamberDust.length) return;
+  const now = performance.now(), el = now - chamberT0;
+  const cos = Math.cos(chamberRot), sin = Math.sin(chamberRot);
+  const wavePos = (el % CH_WAVE) / CH_WAVE;
+  const depthScale = Math.min(W, H) * 0.11;
+  const mv2 = mouseVX * mouseVX + mouseVY * mouseVY;
+  let cleanup = false;
+  for (let i = 0; i < chamberDust.length; i++) {
+    const d = chamberDust[i];
+
+    // 那粒不肯走的尘：散场后用一分多钟慢慢飘回灯里，最后融进灯，灯极轻地闪一下
+    if (d.returning) {
+      const t = (now - d.born) / d.returnDur;
+      if (t >= 1) { _mergeKeeper(d, now); i--; continue; }
+      const e = t * t * (3 - 2 * t);
+      d.x = d.sx + (lampX - d.sx) * e; d.y = d.sy + (lampY - d.sy) * e;
+      d.a = 0.16 * (0.55 + 0.45 * Math.sin(now * 0.002 + d.cphase)) * (1 - t * 0.25);
+      ctx.fillStyle = `rgba(228,238,255,${d.a.toFixed(3)})`;
+      ctx.fillRect(d.x - d.r * 0.5, d.y - d.r * 0.5, d.r, d.r);
+      continue;
+    }
+    if (!d.emerged) continue;
+
+    if (d.shed) {                                  // 已失守：被风接走、上飘、变淡
+      d.x += d.vx; d.y += d.vy; d.vy -= 0.003;
+      d.vx += windDirX * windStrength * windWake * 0.02; d.vx *= 0.99; d.vy *= 0.99;
+      d.a *= 0.984;
+      if (d.a < 0.004) { cleanup = true; continue; }
+    } else {
+      // 涌出 / 保持：从灯心游向心壳上的投影位置
+      const bz = d.chHz * (0.85 + 0.15 * Math.sin(now * 0.0015 + d.cphase));
+      const tx = lampX + (d.chHx * cos + bz * sin);
+      const ty = lampY + d.chHy;
+      const depth = -d.chHx * sin + bz * cos;
+      d.x += (tx - d.x) * 0.08; d.y += (ty - d.y) * 0.08;
+      // 她若移动鼠标：附近的尘极轻微偏向她——像水面对指尖的张力（碰不到，但它知道她在）
+      if (mv2 > 0.6 && mouse.x >= 0) {
+        const ex = d.x - mouse.x, ey = d.y - mouse.y, e2 = ex * ex + ey * ey, R = 120;
+        if (e2 < R * R) { const prox = 1 - Math.sqrt(e2) / R; d.x += mouseVX * prox * 0.012; d.y += mouseVY * prox * 0.012; }
+      }
+      const fin = Math.min(1, (now - d.emergeT) / 1100);          // 涌出后缓缓亮起
+      const dn  = Math.max(0, Math.min(1, depth / depthScale * 0.5 + 0.5));   // 背面更暗（体积感）
+      let cd = Math.abs(d.cparam - wavePos); cd = Math.min(cd, 1 - cd);       // 传导波：一道亮带从心顶流到心尖
+      const cw = Math.exp(-(cd * 4.5) * (cd * 4.5));
+      d.a = d.baseA * fin * (0.55 + 0.45 * dn) * (1 + cw * 0.85);  // 整圈轮廓始终隐约可见，传导波再叠一道流动的亮
+      if (chamberPhase === 'hold' && !d.keeper && Math.random() < 0.00007) _shedMote(d);   // 凝视期：极少数尘脱落（它撑不住自己）
+      if (chamberPhase === 'release' && !d.keeper && now >= d.shedT) _shedMote(d);
+    }
+    if (d.a < 0.004) continue;
+    ctx.fillStyle = `rgba(226,236,255,${Math.min(0.5, d.a).toFixed(3)})`;
+    ctx.fillRect(d.x - d.r * 0.5, d.y - d.r * 0.5, d.r, d.r);
+  }
+  if (cleanup) chamberDust = chamberDust.filter(d => d.keeper || d.returning || !d.shed || d.a >= 0.004);
 }
 
 // ============================================================
@@ -1767,8 +1990,14 @@ function updateTravelers() {
   else if (travelers.length < 3 && now > travelerSpawnAt && Math.random() < 0.2) { spawnTraveler(false); travelerSpawnAt = now + 20000 + Math.random()*30000; }
 
   const wk = 0.3 + 0.7 * windWake;                   // 睡着时旅人也走得倦
+  const chamberStill = chamberActive && chamberPhase !== 'release' && chamberPhase !== 'fail';
   for (let i = travelers.length - 1; i >= 0; i--) {
     const t = travelers[i];
+    if (chamberStill) {                               // 万籁：别的生命也停下脚步，转头朝向灯，屏住呼吸
+      t.speed += (0 - t.speed) * 0.06;
+      t.heading = _lerpAngle(t.heading, Math.atan2(lampY - t.y, lampX - t.x), 0.04);
+      continue;
+    }
     t.heading += (Math.random() - 0.5) * 0.03;        // 散漫：方向缓缓游移
 
     if (t.state === 'wander') {
@@ -2154,7 +2383,10 @@ function animate() {
   const lampTarget = (introState >= St.FIRST_STAR) ? 1 : 0;
   lampAlpha += (lampTarget - lampAlpha) * 0.02;
 
+  if (!chamberActive && chamberDim < 0.999) chamberDim += (1 - chamberDim) * 0.02;   // 心室散后，世界一寸寸回满
+
   drawBackground(elapsed);
+  drawChamberRings();    // 心室：脉冲环（极淡大环，在星野里一圈圈寂静扩散）
   drawGrain(elapsed);
 
   // 流星/鼠标光尾 + 记忆反馈：仅完全交互态（入场期间不响应鼠标）
@@ -2170,6 +2402,11 @@ function animate() {
     if (nowMs > lampPulseTimer && !chamberActive) {
       ripples.push({ cx: lampX, cy: lampY, born: nowMs });
       lampPulseTimer = nowMs + 90000 + Math.random() * 150000;
+      // 它说过一次心事之后，心律里从此多出一拍：约四分之一次脉动变成「咚-咚」双跳（几乎没人会注意）
+      if (chamberHadOne && Math.random() < 0.25) {
+        lampBeatFlash = Math.max(lampBeatFlash, 0.35);
+        setTimeout(() => { if (introState === St.COMPLETE) { ripples.push({ cx: lampX, cy: lampY, born: performance.now() }); lampBeatFlash = Math.max(lampBeatFlash, 0.3); } }, 400);
+      }
       if (Math.random() < 0.08) setTimeout(() => eventMurmur('没什么', 1), 2000);   // 叹气的下半句
     }
     // 缄言排程：到点了、且 90s 间隔已过、文字通道空闲 → 自发说一句
@@ -2183,7 +2420,8 @@ function animate() {
   // drawLines();        // 星野不自动连线；「连星成座」留待第3步
   particles.forEach(p=>{ p.update(elapsed); p.draw(elapsed); });
   drawBloom();           // 柔光：粒子的弥散辉光
-  drawLampCore(elapsed); // 长明：核（最亮、最定的一点白，绘于粒子之上）
+  drawChamberDust(elapsed); // 心室：从灯里泵出的心尘（构成心，绘于粒子之上、灯核之下）
+  drawLampCore(elapsed); // 长明：核（最亮、最定的一点白；心室时它是这颗心的核）
   drawMurmur();          // 心事：缄言/应答的一句话，从灯上方浮出、随风飘散
   // updateDrawOrbit();  // 心形星环（旧设计），已停用
   drawShockwaves();
@@ -2360,6 +2598,44 @@ function buildDrone(){
   droneOsc.connect(droneFilter); droneFilter.connect(droneGain); droneGain.connect(actx.destination);
   droneOsc.start(); lfo.start();
   droneGain.gain.setTargetAtTime(0.05, actx.currentTime, 3);   // 缓缓淡入
+}
+
+// 心室：一记被棉花包住的心音（听诊器里的「咚」，不是鼓）。原生 Web Audio，60Hz 落到 38Hz。
+function playHeartbeat(vol){
+  if (!audioStarted || audioMuted || !actx) return;
+  const t = actx.currentTime, v = vol || 0.12;
+  const o = actx.createOscillator(); o.type = 'sine';
+  o.frequency.setValueAtTime(64, t); o.frequency.exponentialRampToValueAtTime(38, t + 0.18);
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(v, t + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.34);
+  o.connect(g); g.connect(actx.destination); o.start(t); o.stop(t + 0.38);
+}
+// 心室：灯丝低鸣下沉到 36Hz（从「听见」变成身体里的预感）；松手后滑回 44Hz
+function setChamberDrone(sink){
+  if (!droneOsc || !droneFilter || !actx) return;
+  const t = actx.currentTime;
+  droneOsc.frequency.setTargetAtTime(sink ? 36 : (isAsleep ? 38 : 44), t, sink ? 2.0 : 3.0);
+  droneFilter.frequency.setTargetAtTime(sink ? 70 : (isAsleep ? 80 : 120), t, 2.5);
+  if (droneGain) droneGain.gain.setTargetAtTime(sink ? 0.04 : 0.05, t, 2.5);
+}
+// 心室凝视时：55Hz(A1，她的音名) 双音，沉到这件事的最底下
+function setChamberTone(on){
+  if (!actx) return;
+  if (on) {
+    if (chamberToneOsc) { chamberToneGain.gain.setTargetAtTime(0.03, actx.currentTime, 1.5); return; }
+    chamberToneOsc = actx.createOscillator(); chamberToneOsc.type = 'sine'; chamberToneOsc.frequency.value = 55;
+    chamberToneGain = actx.createGain(); chamberToneGain.gain.value = 0;
+    const f = actx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 90;
+    chamberToneOsc.connect(f); f.connect(chamberToneGain); chamberToneGain.connect(actx.destination);
+    chamberToneOsc.start();
+    chamberToneGain.gain.setTargetAtTime(0.03, actx.currentTime, 1.5);
+  } else if (chamberToneOsc) {
+    const o = chamberToneOsc, g = chamberToneGain; chamberToneOsc = null; chamberToneGain = null;
+    g.gain.setTargetAtTime(0, actx.currentTime, 1.2);
+    try { o.stop(actx.currentTime + 3); } catch(e){}
+  }
 }
 
 // 风的气声：低通白噪声，几乎听不见，垫在 40Hz 灯丝低鸣之下；音量随风力起伏（在 updateWind 里调）
