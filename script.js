@@ -178,6 +178,10 @@ let lampSwayT = 0;                     // 久别重逢「晃一下」的起始�
 let lampPresence = 1;                  // 存在感（与她的活跃度成反比，平滑）
 let lampDX = 0, lampDY = 0;            // 本帧灯心总偏移（lean+sway+jitter）
 let lampBright = 1;                    // 本帧灯亮度倍率（presence×flicker×lean）
+let gazeUntil = 0, gazeX = 0, gazeY = 0, gazeNextT = Infinity;   // 望旧处：朝她最常停留的角落望两秒
+// 《心事·心室》：用钥匙才开的房间——星星游向灯，在灯四周排成一只松散自转的三维心壳，维持几秒便散
+let chamberActive = false, chamberPhase = 'idle';   // idle|stilling|gather|hold|release|fail
+let chamberT0 = 0, chamberRot = 0, chamberReleased = false, chamberCooldownUntil = 0, lampPressTimer = 0;
 
 // ---- 夜风：常态宇宙的天气地基（《夜风与旅人》第一阶段）------
 let windAngle = 0, windDirX = 1, windDirY = 0;   // 风向（约12分钟缓慢转一圈）
@@ -242,6 +246,13 @@ function recordTrace(){
   const cy = Math.floor(mouse.y / H * TG_H);
   const i  = cy * TG_W + cx;
   if (i >= 0 && i < traceGrid.length) traceGrid[i] = Math.min(1, traceGrid[i] + 0.004);
+}
+// 她最常停留的角落（痕迹热图最热的一格中心）；不够热则返回 null（如第1夜）
+function hottestTrace() {
+  let mx = 0, mi = -1;
+  for (let i = 0; i < traceGrid.length; i++) if (traceGrid[i] > mx) { mx = traceGrid[i]; mi = i; }
+  if (mi < 0 || mx < 0.12) return null;
+  return { x: ((mi % TG_W) + 0.5) / TG_W * W, y: (Math.floor(mi / TG_W) + 0.5) / TG_H * H };
 }
 
 // ---- 第4步：点击=提问 + 连星成座 ----------------------------
@@ -393,6 +404,7 @@ function spawnMeteor() {
     life:  550 + Math.random() * 400,
   });
   meteorTimeout = setTimeout(spawnMeteor, 15000 + Math.random() * 10000);
+  setTimeout(() => eventMurmur('那颗走得真急', 0.3), 1500);   // 自发流星划过后几秒
 }
 
 // 流星画在顶层画布上，每帧整层清空——拖尾只来自当帧的渐变，绝不跨帧累积/残留。
@@ -489,6 +501,8 @@ class Particle {
     this.homeFx = 0; this.homeFy = 0;  // home 的分数坐标（resize 等比重算）
     this.trembleT = 0;     // 暖星「颤一下」的起始时刻
     this.htx = ix; this.hty = iy;   // 烟花「绽放」时的爱心轮廓目标
+    this.chHx = 0; this.chHy = 0; this.chHz = 0; this.chPhase = 0;    // 心室：三维心壳上的固定位置
+    this.chamberTX = ix; this.chamberTY = iy; this.chamberDepth = 0;  // 心室：本帧投影目标 + 景深
   }
 
   radius(elapsed) {
@@ -519,8 +533,12 @@ class Particle {
     const btx = this.tx + Math.max(-3, Math.min(3, this.brownX));
     const bty = this.ty + Math.max(-3, Math.min(3, this.brownY));
 
-    // 弹簧回归 / 烟花各阶段
-    if (explodePhase === 'gather') {
+    // 弹簧回归 / 烟花各阶段 / 心室
+    if (chamberActive && (chamberPhase === 'gather' || chamberPhase === 'hold' || chamberPhase === 'fail')) {
+      const k = chamberPhase === 'hold' ? 0.06 : (chamberPhase === 'fail' ? 0.022 : 0.045);
+      this.vx += (this.chamberTX - this.x) * k;   // 星星游向心壳上的位置（缓，像被轻轻招过去，不是被拽）
+      this.vy += (this.chamberTY - this.y) * k;
+    } else if (explodePhase === 'gather') {
       this.vx += (this.htx - this.x) * 0.045;   // 缓慢聚拢到爱心轮廓
       this.vy += (this.hty - this.y) * 0.045;
     } else if (explodePhase === 'hold') {
@@ -541,8 +559,9 @@ class Particle {
       this.vy += (Math.random() - 0.5) * 0.18;
     }
 
-    // 鼠标交互（仅 COMPLETE 且非爆炸；入场期间不响应）
-    if (introState === St.COMPLETE && explodePhase === 'idle') {
+    // 鼠标交互（仅 COMPLETE 且非爆炸；入场期间不响应；心室成形时星点不受她的推挤，安静地排成心）
+    if (introState === St.COMPLETE && explodePhase === 'idle' &&
+        !(chamberActive && (chamberPhase === 'gather' || chamberPhase === 'hold'))) {
       const mdx = mouse.x - this.x;
       const mdy = mouse.y - this.y;
       const md  = Math.sqrt(mdx*mdx + mdy*mdy);
@@ -614,6 +633,11 @@ class Particle {
       if (ld2 < lampR * lampR) va *= 1 + (1 - Math.sqrt(ld2) / lampR) * 0.7;
     }
     va *= cloudDim(this.x, this.y);        // 云影：经过处星光变弱（灯不受影响）
+    // 心室：心壳自转时，转到背面的星点更暗——体积感（一只有厚度的心，永远没有完全闭合）
+    if (chamberActive && (chamberPhase === 'gather' || chamberPhase === 'hold')) {
+      const dn = Math.max(-1, Math.min(1, this.chamberDepth / (Math.min(W, H) * 0.13)));
+      va *= 0.40 + 0.60 * (dn * 0.5 + 0.5);
+    }
     if (va < 0.01) return;                 // 尚未点亮 / 睡得太深：不画
     windOffset(this.x, this.y, 0.8);       // 夜风：星野随风俯仰（近层，仅绘制偏移、不动物理）
     const px = this.x + woX, py = this.y + woY;
@@ -893,6 +917,11 @@ function enterComplete() {
   meteorTimeout = setTimeout(spawnMeteor, 8000 + Math.random()*12000);
   lampPulseTimer = performance.now() + 30000 + Math.random()*30000;   // 长明首次脉动：30~60s 后
   seedTravelers();   // 她推门进来时，天上已有人正在路过
+  // 缄言：本次到访的状态归零
+  saidThisSession.clear(); firstKnockDone = false; replyShyUntil = 0; murmur = null;
+  if (longAway) { pendingReturn = true; murmurNextT = performance.now() + 30000 + Math.random()*40000; }   // 久别：几分钟内必说「回来了」
+  else          { murmurNextT = performance.now() + 120000 + Math.random()*180000; }                       // 首句 2~5 分钟
+  gazeUntil = 0; gazeNextT = performance.now() + 60000 + Math.random()*120000;   // 望旧处：1~3 分钟后第一次
 
   // 第100夜日出（前几分钟一切如常，安静下来后才发生）
   if (DBG.sunrise || (visitCount >= 100 && !hasSaid('s_hundred'))) {
@@ -928,6 +957,7 @@ function pickOpeningSentence() {
 
 // 文字浮现：偏左下，极细、不发光
 function showSentence(text) {
+  sentenceActive = true; murmur = null;   // 七句话占用文字通道，缄言让位
   introWrap.style.display = 'block';
   introLine2.style.display = 'none';
   const el = introLine1;
@@ -955,7 +985,7 @@ function dissolveSentence(cb) {
   spawnStardust(rect);
   el.style.transition = 'opacity 1.6s ease';
   el.style.opacity = '0';
-  setTimeout(()=>{ if (cb) cb(); }, 1700);
+  setTimeout(()=>{ sentenceActive = false; if (cb) cb(); }, 1700);
 }
 
 function spawnStardust(rect) {
@@ -1012,7 +1042,7 @@ function onFirstGesture() {
 // 十九、点击 = 向天空提问（克制的随机回应；约 1/10 沉默）
 // ============================================================
 function askSky(cx, cy) {
-  if (introState !== St.COMPLETE || explodePhase !== 'idle') return;
+  if (introState !== St.COMPLETE || explodePhase !== 'idle' || chamberActive) return;
   const roll = Math.random();
   if      (roll < 0.10) { return; }              // 沉默：天空只是看着她
   else if (roll < 0.42) heartBlossom(cx, cy);    // 温柔绽放：爱心0.5秒闪现→雪落
@@ -1266,9 +1296,22 @@ function initLamp() {
 function updateLamp() {
   const now = performance.now();
 
-  // ① 迎向鼠标：她的光标探进灯的领域时，灯心朝她轻轻倾过去（全世界都怕她碰，只有它把光递过来）
+  // ② 望旧处：她不在/久不动、世界安静时，偶尔朝她最常停留的角落望两秒
+  //   （第 1 夜没有这动作——还没有「她的角落」；住得越久，灯越知道往哪儿看；永不解释）
+  if (now > gazeNextT && !gazeUntil && visitCount >= 2 && (mouse.x < 0 || now - lastMouseMoveTime > 8000)) {
+    const spot = hottestTrace();
+    if (spot) { gazeX = spot.x; gazeY = spot.y; gazeUntil = now + 2200; }
+    gazeNextT = now + 120000 + Math.random()*180000;        // 几分钟一次
+  }
+  if (gazeUntil && now >= gazeUntil) gazeUntil = 0;
+
+  // ① 迎向鼠标 / 望旧处：灯心朝目标轻轻倾过去（凝视空椅子优先于迎向她的光标）
   let tlx = 0, tly = 0, leanInfluence = 0;
-  if (mouse.x >= 0 && mouse.x <= W) {
+  if (gazeUntil) {                                          // 望向那个角落（远处，固定小幅，不变亮——只是看一眼）
+    const dx = gazeX - lampX, dy = gazeY - lampY, d = Math.hypot(dx, dy) || 1;
+    const mag = lampR * 0.13;
+    tlx = (dx / d) * mag; tly = (dy / d) * mag;
+  } else if (mouse.x >= 0 && mouse.x <= W) {                // 全世界都怕她碰，只有它把光递过来
     const dx = mouse.x - lampX, dy = mouse.y - lampY;
     const d  = Math.hypot(dx, dy);
     const reach = lampR * 1.7;
@@ -1358,6 +1401,206 @@ function drawLampCore(elapsed) {
 }
 
 // ============================================================
+// 心事 · 缄言与应答：灯偶尔出声。缄言=对空房间的自语（无声、可漏「我」）；
+// 应答=她敲门（点灯晕）时灯的回话（有灯丝微响、永不提问）。同屏至多一句，随风飘散。
+// ============================================================
+let murmur = null;                 // 当前在屏的一句话
+let murmurNextT = Infinity;        // 下一句自发缄言的排程
+let murmurLastT = -1e9;            // 上一句话时刻（≥90s 间隔）
+let saidThisSession = new Set();   // 缄言一夜不重复
+let firstKnockDone = false;        // 本次到访是否已敲过门
+let replyShyUntil = 0;             // 应答后的害羞期
+let pendingReturn = false;         // 久别：待说「回来了」
+let sentenceActive = false;        // 七句话是否在屏（与缄言互斥）
+
+const MURMURS = [   // 自发缄言词库（按当下语境挑）
+  { t:'三点了',              w:2,   when:c=>c.h>=2&&c.h<4 },
+  { t:'夜很深了',            w:2,   when:c=>c.h>=0&&c.h<4 },
+  { t:'早点睡',              w:2,   when:c=>c.h>=0&&c.h<4 },
+  { t:'灯不困',              w:1,   when:c=>c.h>=0&&c.h<5 },
+  { t:'天快亮了',            w:2,   when:c=>c.h>=4&&c.h<6 },
+  { t:'又守完一夜',          w:2,   when:c=>c.h>=5&&c.h<8 },
+  { t:'太阳替我亮一会儿',    w:5,   when:c=>c.h>=9&&c.h<17 },
+  { t:'该我了',              w:2,   when:c=>c.h>=17&&c.h<20 },
+  { t:'夜里冷',              w:1,   when:c=>(c.h<5||c.h>=22)&&(c.mo>=10||c.mo<=1) },
+  { t:'记得吃饭',            w:1,   when:c=>(c.h>=11&&c.h<13)||(c.h>=17&&c.h<19) },
+  { t:'今晚风急',            w:2,   when:c=>c.windHigh },
+  { t:'风把星星吹歪了',      w:1.5, when:c=>c.windHigh },
+  { t:'今晚真静',            w:2,   when:c=>c.calm },
+  { t:'今晚很阴',            w:2,   when:c=>c.cloudy },
+  { t:'云过来了',            w:1,   when:c=>c.cloudy },
+  { t:'今晚晴 星星都出来了', w:1.5, when:c=>c.clear&&(c.h<8||c.h>=18) },
+  { t:'那颗星总跟着你',      w:2.5, when:c=>c.shyNear },
+  { t:'那颗星很老了',        w:1,   when:()=>true },
+  { t:'你上次走了之后',      w:2,   when:c=>c.visit>=2 },
+  { t:'你画的线还在',        w:2,   when:c=>c.constel>0 },
+  { t:'星星比昨天多一颗',    w:0.6, when:c=>c.visit>=2 },
+  { t:'我亮着',              w:2,   when:()=>true },
+  { t:'没什么事 就是亮着',   w:2,   when:()=>true },
+  { t:'等不算什么事',        w:0.6, when:()=>true },
+  { t:'忘了从哪天开始亮的',  w:0.6, when:()=>true },
+  { t:'你那边天气怎么样',    w:1.5, when:()=>true },
+];
+const REPLIES = [   // 应答词库（永不提问）
+  { t:'嗯', w:3 }, { t:'在', w:3 }, { t:'在呢', w:3 },
+  { t:'听见了', w:2 }, { t:'知道了', w:2 }, { t:'亮着呢', w:2 }, { t:'我在', w:2 },
+  { t:'没睡',       w:1.5, when:c=>c.h<5||c.h>=23 },
+  { t:'别怕',       w:1.2, when:c=>c.h>=0&&c.h<5 },
+  { t:'不冷',       w:1.2, when:c=>c.mo>=10||c.mo<=1 },
+  { t:'我知道你在', w:0.3, when:c=>c.h<5&&c.visit>=10 },
+];
+
+function murmurCtx() {
+  const shyNear = !!shyStar && mouse.x >= 0 &&
+    Math.hypot(shyStar.x - mouse.x, shyStar.y - mouse.y) < shyStop + 34;
+  return {
+    h: hour, mo: _now.getMonth(), visit: visitCount,
+    windHigh: windStrength > 0.5, calm: NIGHT_WIND_MAX < 0.2,
+    cloudy: NIGHT_CLOUDS >= 2 || cloudDim(lampX, lampY - lampR) < 0.85,
+    clear: NIGHT_CLOUDS === 0, constel: constellations.length, shyNear,
+  };
+}
+function pickWeighted(arr, ctx, avoidSaid) {
+  let pool = arr.filter(e => (!e.when || e.when(ctx)) && !(avoidSaid && saidThisSession.has(e.t)));
+  if (!pool.length) pool = arr.filter(e => !e.when || e.when(ctx));
+  if (!pool.length) return null;
+  let tot = 0; for (const e of pool) tot += e.w;
+  let r = Math.random() * tot;
+  for (const e of pool) { r -= e.w; if (r <= 0) return e.t; }
+  return pool[0].t;
+}
+function canMurmur() {
+  return introState === St.COMPLETE && !murmur && !sentenceActive && !sunriseActive && !chamberActive;
+}
+function sayMurmur(text, kind) {
+  if (!text) return;
+  const now = performance.now();
+  murmur = {
+    text, kind, born: now, dur: kind === 'reply' ? 4500 : 7000,
+    x: lampX + (kind === 'reply' ? 0 : lampR * 0.28),
+    y: lampY - lampR * (kind === 'reply' ? 0.92 : 0.72),
+  };
+  murmurLastT = now;
+  if (kind === 'say') saidThisSession.add(text);
+}
+function saySelfMurmur() {   // 到点了，自发说一句（久别先说「回来了」）
+  if (pendingReturn) { pendingReturn = false; sayMurmur('回来了', 'say'); return; }
+  sayMurmur(pickWeighted(MURMURS, murmurCtx(), true), 'say');
+}
+function eventMurmur(text, prob) {   // 应景插队，受 90s 间隔与概率约束
+  if (!canMurmur() || pendingReturn) return;
+  if (performance.now() - murmurLastT < 90000) return;
+  if (Math.random() > prob) return;
+  sayMurmur(text, 'say'); scheduleNextMurmur();
+}
+function scheduleNextMurmur() {
+  let base = 240000 + Math.random()*360000;        // 4~10 分钟
+  if (hour >= 9 && hour < 17) base *= 6;            // 白天几乎噤声
+  else if (hour >= 0 && hour < 5) base *= 0.5;      // 凌晨更密
+  murmurNextT = performance.now() + base;
+}
+function drawMurmur() {
+  if (!murmur) return;
+  const now = performance.now(), age = now - murmur.born;
+  if (age > murmur.dur || lampAlpha < 0.02) { murmur = null; return; }
+  const t = age / murmur.dur;
+  let alpha = (t < 0.18 ? t/0.18 : (t > 0.65 ? (1 - t)/0.35 : 1)) * (murmur.kind === 'reply' ? 0.55 : 0.45) * lampAlpha;
+  murmur.x += windDirX * windStrength * windWake * 0.35;   // 随风飘散
+  murmur.y -= 0.08;                                         // 缓缓上浮（呵出的一口白气）
+  if (alpha < 0.012) return;
+  ctx.save();
+  ctx.font = '300 ' + Math.round(Math.min(W,H)*0.021) + 'px "PingFang SC","Hiragino Sans GB","Microsoft YaHei","微软雅黑",system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = `rgba(230,238,255,${alpha.toFixed(3)})`;
+  ctx.fillText(murmur.text, murmur.x, murmur.y);
+  ctx.restore();
+}
+function knockLamp() {   // 她敲门（点灯晕）：总是脉动；低概率回话；说过则害羞一阵
+  if (introState !== St.COMPLETE || chamberActive) return;   // 心室进行中不应门
+  const now = performance.now();
+  ripples.push({ cx: lampX, cy: lampY, born: now });   // 总是轻轻脉动一圈
+  if (now < replyShyUntil || !canMurmur()) return;
+  let p = firstKnockDone ? 0.20 : 0.40;
+  if (hour >= 0 && hour < 5) p += 0.10;
+  firstKnockDone = true;
+  if (Math.random() < p) {
+    sayMurmur(pickWeighted(REPLIES, { h: hour, mo: _now.getMonth(), visit: visitCount }, false), 'reply');
+    playFilamentTick();
+    replyShyUntil = now + 15000 + Math.random()*15000;   // 15~30s 害羞
+  }
+}
+function playFilamentTick() {   // 灯丝微响：极轻的电流/嗒声（原生 Web Audio，不是钢琴）
+  if (!audioStarted || audioMuted || !actx) return;
+  const t = actx.currentTime, len = Math.floor(actx.sampleRate * 0.06);
+  const buf = actx.createBuffer(1, len, actx.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random()*2 - 1) * (1 - i/len);   // 衰减噪声
+  const src = actx.createBufferSource(); src.buffer = buf;
+  const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1700; bp.Q.value = 0.9;
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.05, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+  src.connect(bp); bp.connect(g); g.connect(actx.destination);
+  src.start(t); src.stop(t + 0.1);
+}
+
+// ── 心室：用钥匙才开的房间（Ctrl+L / 长按灯 3 秒）────────────────────────
+// 风停 → 星星游向灯 → 在灯四周排成一只松散自转的三维心壳 → 维持几秒 → 散回，灯脉动，A4 响起。
+// 爱在这里永远只许成为一个留不住的形状。
+function startChamber() {
+  if (introState !== St.COMPLETE || sunriseActive || explodePhase !== 'idle') return;   // 开场/日出/烟花时这扇门不开
+  if (chamberActive) return;
+  const now = performance.now();
+  if (now < chamberCooldownUntil) {        // 一晚说不出第二次：星星只朝内轻轻一倾，又散了（失败本身就是回答，不解释）
+    chamberActive = true; chamberPhase = 'fail'; chamberT0 = now; chamberReleased = true;
+    for (const p of particles) { p.chamberTX = lampX; p.chamberTY = lampY; }
+    return;
+  }
+  chamberActive = true; chamberPhase = 'stilling'; chamberT0 = now; chamberReleased = false; chamberRot = 0;
+  const S = Math.min(W, H) * 0.016;
+  for (const p of particles) {             // 为每颗星分配三维心壳上的一个位置（经典爱心参数曲线 + 厚度）
+    const t  = Math.random() * Math.PI * 2;
+    const hx = 16 * Math.pow(Math.sin(t), 3);
+    const hy = -(13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t));
+    const rr = 0.40 + 0.60 * Math.random();                                  // 内外铺开，偏外→壳感
+    p.chHx = hx * S * rr;
+    p.chHy = hy * S * rr - S * 3;                                            // 让整颗心落在灯心上
+    p.chHz = S * 5.5 * (1 - rr * 0.7) * (Math.random() < 0.5 ? 1 : -1);      // 厚度：中心厚边缘薄，前/后两面
+    p.chPhase = Math.random() * Math.PI * 2;
+    p.chamberTX = p.x; p.chamberTY = p.y; p.chamberDepth = 0;
+  }
+}
+function updateChamber() {
+  if (!chamberActive) return;
+  const now = performance.now(), el = now - chamberT0;
+  if (chamberPhase === 'fail') { if (el > 1400) { chamberActive = false; chamberPhase = 'idle'; } return; }
+  if      (el < 2000)  chamberPhase = 'stilling';   // ① 风先停下来（约 2s）
+  else if (el < 6000)  chamberPhase = 'gather';     // ② 星星游向灯（约 4s）
+  else if (el < 13000) chamberPhase = 'hold';       // ③ 心壳成形、缓缓自转（约 7s）
+  else if (el < 16500) chamberPhase = 'release';    // ④ 松手：星散回、风一寸寸回来
+  else { chamberActive = false; chamberPhase = 'idle'; return; }
+
+  if (chamberPhase === 'release' && !chamberReleased) {
+    chamberReleased = true;
+    ripples.push({ cx: lampX, cy: lampY, born: now });   // 灯脉动一圈——憋了一路的那次心跳
+    playHerNoteForce();                                  // A4，她的专属音，整件事落在她名字上
+    chamberCooldownUntil = now + 180000;                 // 三分钟内说不出第二次
+  }
+  if (chamberPhase === 'gather' || chamberPhase === 'hold') {
+    chamberRot += 0.0052;                                // 约 20s 转一圈，她大致只看见一面
+    const cos = Math.cos(chamberRot), sin = Math.sin(chamberRot);
+    for (const p of particles) {
+      const bz = p.chHz * (0.86 + 0.14 * Math.sin(now * 0.0016 + p.chPhase));   // 星点在壳面内外轻轻进出呼吸
+      p.chamberTX = lampX + (p.chHx * cos + bz * sin);                          // 绕竖轴自转后投影到屏幕
+      p.chamberTY = lampY + p.chHy;
+      p.chamberDepth = -p.chHx * sin + bz * cos;                               // 深度：背面更暗
+    }
+  }
+}
+function playHerNoteForce() {   // 心室收束时，A4 必响（不受「每会话只响一次」限制）
+  if (!audioStarted || audioMuted || !synth) return;
+  synth.triggerAttackRelease(HER_NOTE, 3.5, undefined, 0.5);
+}
+
+// ============================================================
 // 夜风：风场推进 + 查询（星野的共同摇曳 / 阵风 / 她的流）
 // ============================================================
 function updateWind(elapsed) {
@@ -1370,10 +1613,13 @@ function updateWind(elapsed) {
   windStrength += (sTarget - windStrength) * 0.01;
   windSwayPhase += dt * (Math.PI*2 / 6000);                         // 约 6s 一次俯仰
   const idle = now - lastActivityT;
-  const wkT = idle < 120000 ? 1 : (idle < 600000 ? 0.5 : 0);        // 困倦放缓、睡着停
-  windWake += (wkT - windWake) * 0.01;
+  // 心室成形时风先停下来（gather/hold/stilling）；松手后（release）风一寸寸慢慢回来
+  const chamberStill = chamberActive && chamberPhase !== 'release' && chamberPhase !== 'fail';
+  const wkT = chamberStill ? 0 : (idle < 120000 ? 1 : (idle < 600000 ? 0.5 : 0));
+  windWake += (wkT - windWake) * (chamberStill ? 0.04 : 0.01);      // 停得稍快、回得极慢
   if (now > windGustNext && windStrength > 0.12 && !isAsleep) {     // 每 1~2 分钟一阵风
     windGustT0 = now; windGustNext = now + 60000 + Math.random()*60000;
+    eventMurmur(['风大 多穿','今晚风急','风把星星吹歪了'][Math.floor(Math.random()*3)], 0.22);   // 阵风刚过，应景
   }
   if (prevAsleep && !isAsleep) windGustT0 = now;                    // 苏醒：第一阵风穿野而过
   prevAsleep = isAsleep;
@@ -1497,10 +1743,13 @@ function spawnTraveler(onscreen) {
     else              { x=Math.random()*W; y=H+mg;  heading = -Math.PI/2 + (Math.random()-0.5)*1.2; }
   }
   const baseSpeed = 0.10 + Math.random()*0.12;       // 几分钟横穿
+  const role = Math.random();                         // 性格：拜访灯 / 好奇看她 / 只是路过
   travelers.push({
     x, y, heading, speed: baseSpeed, baseSpeed,
     state: 'wander',
-    willVisit: Math.random() < 0.4,                  // 偶尔——不是每位都会
+    willVisit: role < 0.35,                          // 偶尔到灯边歇脚
+    willPeek:  role >= 0.35 && role < 0.60,           // 偶尔好奇地弯向她的光标
+    peekUntil: 0,
     visitAt: now + 8000 + Math.random()*22000,
     restUntil: 0, pauseUntil: 0, nextPause: now + 8000 + Math.random()*20000,
     inHalo: false, notePlayed: false, phase: Math.random()*Math.PI*2,
@@ -1528,7 +1777,20 @@ function updateTravelers() {
       t.speed += ((moving ? t.baseSpeed : 0) - t.speed) * 0.04;
       if (t.willVisit && now > t.visitAt) {           // 朝灯弯过去
         t.heading = _lerpAngle(t.heading, Math.atan2(lampY - t.y, lampX - t.x), 0.05);
-        if (Math.hypot(t.x - lampX, t.y - lampY) < lampR * 0.8) { t.state = 'resting'; t.restUntil = now + 12000 + Math.random()*8000; }
+        if (Math.hypot(t.x - lampX, t.y - lampY) < lampR * 0.8) { t.state = 'resting'; t.restUntil = now + 12000 + Math.random()*8000; eventMurmur('来客人了', 0.3); }
+      }
+      if (t.willPeek && mouse.x >= 0 && now - lastMouseMoveTime > 10000) {   // 她静止>10s：好奇地弯向她
+        const dHer = Math.hypot(t.x - mouse.x, t.y - mouse.y);
+        if (dHer > 90) t.heading = _lerpAngle(t.heading, Math.atan2(mouse.y - t.y, mouse.x - t.x), 0.05);
+        else { t.state = 'peeking'; t.peekUntil = now + 2000 + Math.random()*1500; }
+      }
+    } else if (t.state === 'peeking') {               // 在她光标外礼貌距离（70px）绕半圈；她一动立刻走开
+      if (now - lastMouseMoveTime < 400 || mouse.x < 0) { t.state = 'wander'; t.willPeek = false; t.speed = t.baseSpeed; }
+      else {
+        const ang = Math.atan2(t.y - mouse.y, t.x - mouse.x) + 0.02;
+        t.x += (mouse.x + Math.cos(ang)*70 - t.x) * 0.05;
+        t.y += (mouse.y + Math.sin(ang)*70 - t.y) * 0.05;
+        if (now > t.peekUntil) { t.state = 'wander'; t.willPeek = false; t.speed = t.baseSpeed; }   // 看够了，若无其事继续赶路
       }
     } else if (t.state === 'resting') {               // 在灯边懒懒地绕半圈 / 歇着
       const ang = Math.atan2(t.y - lampY, t.x - lampX) + 0.012;
@@ -1541,13 +1803,13 @@ function updateTravelers() {
       t.speed += (t.baseSpeed - t.speed) * 0.04;
     }
 
-    if (t.state !== 'resting') {
+    if (t.state === 'wander' || t.state === 'leaving') {   // resting/peeking 自行定位，不走直线
       t.x += (Math.cos(t.heading) * t.speed + windDirX * windStrength * windWake * 0.3) * (t.state==='wander' ? wk : 1);
       t.y += (Math.sin(t.heading) * t.speed + windDirY * windStrength * windWake * 0.3) * (t.state==='wander' ? wk : 1);
     }
 
     const nowInHalo = Math.hypot(t.x - lampX, t.y - lampY) < lampR;   // 离开光晕的那一刻：灯送客
-    if (t.inHalo && !nowInHalo && t.state === 'leaving') ripples.push({ cx: lampX, cy: lampY, born: now });
+    if (t.inHalo && !nowInHalo && t.state === 'leaving') { ripples.push({ cx: lampX, cy: lampY, born: now }); eventMurmur('慢走', 0.15); }
     t.inHalo = nowInHalo;
 
     const m = 60;
@@ -1643,6 +1905,7 @@ function updateSunrise() {
 }
 function endSunrise() {
   dawnLevel = 0; starFade = 0; sunriseActive = false; sunriseFreeze = false; sunrisePhase = null;
+  sentenceActive = false;   // 第100夜那句话此时已隐去，释放文字通道
   if (droneGain && actx && !audioMuted) droneGain.gain.setTargetAtTime(0.05, actx.currentTime, 4);
   startAmbientPiano();
   if (DBG.night === null) lsSet('fx_sunrise', '1');
@@ -1670,6 +1933,8 @@ function startBirthdayMoon() {
     showSentence('这个宇宙没有月亮。除了今天。');
     markSaid('s_birthday1');
     setTimeout(() => dissolveSentence(), 6500);
+  } else {
+    setTimeout(() => eventMurmur('它一年来一次', 0.7), 25000);   // 第二年起：句子花完了，自语接班
   }
 }
 function drawMoon() {
@@ -1897,14 +2162,18 @@ function animate() {
     updateShyStar();
     updateSecretStar();
     updateTravelers();   // 夜行者横穿夜空、偶尔到灯边歇脚
+    updateChamber();     // 心室：星星游向灯、排成自转的三维心壳、再散
     recordTrace();
     const nowMs = performance.now();
     if (nowMs - traceSaveT > 8000) { saveTrace(); traceSaveT = nowMs; }
     // 长明的脉动：每隔一两到三四分钟，无声荡出一圈光环（复用涟漪系统：星被波前扫过暗一下再亮）
-    if (nowMs > lampPulseTimer) {
+    if (nowMs > lampPulseTimer && !chamberActive) {
       ripples.push({ cx: lampX, cy: lampY, born: nowMs });
       lampPulseTimer = nowMs + 90000 + Math.random() * 150000;
+      if (Math.random() < 0.08) setTimeout(() => eventMurmur('没什么', 1), 2000);   // 叹气的下半句
     }
+    // 缄言排程：到点了、且 90s 间隔已过、文字通道空闲 → 自发说一句
+    if (nowMs > murmurNextT && nowMs - murmurLastT > 90000 && canMurmur()) { saySelfMurmur(); scheduleNextMurmur(); }
     drawMeteors();
     updateMouseHistory();
     drawMouseTrail();
@@ -1915,6 +2184,7 @@ function animate() {
   particles.forEach(p=>{ p.update(elapsed); p.draw(elapsed); });
   drawBloom();           // 柔光：粒子的弥散辉光
   drawLampCore(elapsed); // 长明：核（最亮、最定的一点白，绘于粒子之上）
+  drawMurmur();          // 心事：缄言/应答的一句话，从灯上方浮出、随风飘散
   // updateDrawOrbit();  // 心形星环（旧设计），已停用
   drawShockwaves();
   drawTouchBeam();
@@ -1949,7 +2219,8 @@ function endPress(x, y) {
   if (!press) return;
   const moved = Math.hypot(x - press.sx, y - press.sy);
   if (moved < CONNECT_MIN) {
-    askSky(x, y);                                   // 轻点 = 提问
+    if (lampR > 0 && Math.hypot(x - lampX, y - lampY) < lampR * 1.1) knockLamp();  // 点灯晕 = 敲门（应答）
+    else askSky(x, y);                              // 点天空 = 提问（烟花）
   } else if (press.star) {
     const end = nearestStar(x, y, STAR_GRAB);
     if (end && end !== press.star) addConstellation(press.star, end);  // 拖拽 = 连星
@@ -1968,7 +2239,10 @@ window.addEventListener('mouseup', e=>{
   endPress(e.clientX, e.clientY);
 });
 
-window.addEventListener('keydown', e=>{ onFirstGesture(); });   // 任意按键也可解锁声音/推进开场
+window.addEventListener('keydown', e=>{
+  onFirstGesture();   // 任意按键也可解锁声音/推进开场
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'l' || e.key === 'L')) { e.preventDefault(); startChamber(); }   // 心室的钥匙
+});
 
 // 触摸
 window.addEventListener('touchstart', e=>{
@@ -1976,7 +2250,12 @@ window.addEventListener('touchstart', e=>{
   const t=e.touches[0]; mouse.x=t.clientX; mouse.y=t.clientY;
   onFirstGesture();
   lastActivityT = performance.now();
-  if (e.touches.length===1) press = { sx:t.clientX, sy:t.clientY, star:nearestStar(t.clientX,t.clientY,STAR_GRAB), t:Date.now() };
+  if (e.touches.length===1) {
+    press = { sx:t.clientX, sy:t.clientY, star:nearestStar(t.clientX,t.clientY,STAR_GRAB), t:Date.now() };
+    if (lampR > 0 && Math.hypot(t.clientX - lampX, t.clientY - lampY) < lampR * 1.1) {   // 长按灯 3 秒 = 心室的钥匙
+      clearTimeout(lampPressTimer); lampPressTimer = setTimeout(startChamber, 3000);
+    }
+  }
 }, {passive:true});
 
 window.addEventListener('touchmove', e=>{
@@ -1984,10 +2263,12 @@ window.addEventListener('touchmove', e=>{
   for(let i=0;i<Math.min(e.touches.length,2);i++) touchPoints.push({x:e.touches[i].clientX,y:e.touches[i].clientY});
   mouse.x=touchPoints[0].x; mouse.y=touchPoints[0].y;
   lastMouseMoveTime = lastActivityT = performance.now();
+  if (press && Math.hypot(mouse.x - press.sx, mouse.y - press.sy) > 16) clearTimeout(lampPressTimer);   // 手指挪开则取消长按
 },{passive:true});
 
 window.addEventListener('touchend', e=>{
   touchPoints=[];
+  clearTimeout(lampPressTimer);   // 抬手：若长按未满 3 秒则取消
   if (press && e.changedTouches && e.changedTouches.length) {
     const t = e.changedTouches[0];
     endPress(t.clientX, t.clientY);
